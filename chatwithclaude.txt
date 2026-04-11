@@ -1,0 +1,2098 @@
+Project 1: Hybrid RAG with Re-ranking — Measured Quality Improvement over Naive Retrieval
+Domain: RAG | Priority: 1 | Timeline: Day 1 GitHub name: hybrid-rag-reranking Pin this: Yes — Pin to top of GitHub profile
+What It Does
+A production-grade RAG system that goes beyond naive retrieval. Uses hybrid search (dense + sparse), a cross-encoder re-ranker, and query expansion to dramatically improve retrieval quality. Benchmarks itself against naive RAG on a custom eval set and reports real measured improvement numbers.
+Metrics To Measure And Report (run these before writing README)
+* NDCG@5: naive RAG vs hybrid RAG (target: +25-35% improvement)
+* Faithfulness score: RAGAS metric (target: naive ~0.6, advanced ~0.8)
+* Latency: naive vs advanced (show quality/latency tradeoff curve)
+* MRR (Mean Reciprocal Rank): how often correct doc is rank 1
+* Put REAL numbers in README — do not fabricate. Run eval first, then write headline.
+Architecture
+User Query
+    │
+    ▼
+Query Expansion (LLM generates 3 variants)
+    │
+    ├──► Dense Search (ChromaDB / sentence-transformers)
+    │
+    └──► Sparse Search (BM25)
+         │
+         ▼
+    Reciprocal Rank Fusion (merge results)
+         │
+         ▼
+    Cross-Encoder Re-ranking (Cohere / local)
+         │
+         ▼
+    Top-K Context Assembly
+         │
+         ▼
+    LLM Generation (OpenRouter)
+         │
+         ▼
+    Response + Source Citations
+Tech Stack
+* Embeddings: sentence-transformers (all-MiniLM-L6-v2)
+* Vector DB: ChromaDB (local, no cloud dependency)
+* Sparse search: rank_bm25
+* Re-ranker: Cohere rerank API or cross-encoder/ms-marco-MiniLM-L-6-v2
+* Fusion: Reciprocal Rank Fusion (RRF)
+* LLM: OpenRouter (llama-3-70b or mistral)
+* Frontend: Streamlit
+* Eval: Custom eval set with RAGAS metrics
+Features
+1. Document ingestion — PDF, URL, plain text
+2. Query expansion — LLM generates 3 query variants, results fused
+3. Hybrid retrieval — dense + sparse, RRF merge
+4. Re-ranking — cross-encoder scores top-20, returns top-5
+5. Eval dashboard — side-by-side: naive RAG vs advanced RAG on same queries
+6. Source citations — every response shows which chunks were used
+7. Retrieval metrics panel — MRR, NDCG, faithfulness score
+Streamlit UI Sections
+* Sidebar: document upload, chunking strategy selector
+* Main: chat interface with source panel
+* Tab 2: Eval dashboard (naive vs advanced comparison table)
+* Tab 3: Retrieval internals (show retrieved chunks, scores, re-rank deltas)this is the project that i am trying to build. I know RAG but explain to me how this project will work. explain each and every part.Show more4:23 PMSynthesized educational framework for comprehensive RAG system explanationSynthesized educational framework for comprehensive RAG system explanationLet me break this down end-to-end, every component, in the order data actually flows through the system.
+
+The Core Problem This Solves
+Naive RAG has one fatal flaw: it retrieves by semantic similarity alone. If a user asks "What are the side effects of metformin?", naive RAG embeds that query and finds chunks that sound similar — but might miss the exact document that uses clinical language like "adverse reactions" or "contraindications." You get semantically close but factually wrong results.
+This project fixes that with four layers of increasingly expensive-but-accurate retrieval.
+
+Part 1 — Document Ingestion
+Before any query happens, you need to get documents into the system.
+What happens:
+
+User uploads a PDF, pastes a URL, or drops in plain text
+The document gets chunked — split into overlapping pieces (e.g., 512 tokens with 50-token overlap)
+Overlap matters because a fact might sit at a chunk boundary — without overlap you'd lose it
+Each chunk gets two representations stored simultaneously:
+
+A dense vector (float array) via sentence-transformers/all-MiniLM-L6-v2 → stored in ChromaDB
+Added to a BM25 index (just the raw text, no vectors) → stored in memory via rank_bm25
+
+
+
+So every chunk lives in two places. This is the foundation of hybrid search.
+
+Part 2 — Query Expansion
+When a user types a query, you don't search immediately. First you expand it.
+What happens:
+You send the original query to the LLM with a prompt like:
+
+"Generate 3 alternative phrasings of this question that preserve meaning but use different vocabulary."
+
+Example:
+
+Original: "How does transformer attention work?"
+Variant 1: "What is the self-attention mechanism in neural networks?"
+Variant 2: "Explain the key-query-value computation in transformers"
+Variant 3: "How do transformers decide what to focus on?"
+
+Why this helps: Different phrasings hit different chunks. Someone who wrote documentation might use "self-attention" while another used "attention mechanism." You cast a wider net without changing what the user actually wanted.
+Now you have 4 queries (original + 3 variants). Each one goes into both retrieval systems.
+
+Part 3 — Hybrid Retrieval (Dense + Sparse)
+This runs in parallel for all 4 query variants.
+Dense Search (ChromaDB + sentence-transformers)
+
+The query gets embedded into a vector
+ChromaDB does a cosine similarity search and returns top-20 chunks
+Good at: paraphrases, synonyms, conceptual similarity
+Bad at: exact keyword matches, rare proper nouns, numbers
+
+Sparse Search (BM25)
+
+BM25 is essentially a smarter TF-IDF — it scores documents by how often query terms appear, weighted by how rare those terms are across the corpus
+No embeddings, pure term frequency math
+Good at: exact keyword matches, technical terms, IDs, names
+Bad at: understanding synonyms or paraphrases
+
+These two search methods are complementary — one's weakness is the other's strength.
+
+Part 4 — Reciprocal Rank Fusion (RRF)
+You now have up to 8 ranked lists (4 queries × 2 retrieval methods), each with up to 20 results. You need to merge them into one list.
+RRF formula for each chunk:
+RRF_score(chunk) = Σ  1 / (k + rank_in_list)
+where k is typically 60 (a smoothing constant).
+Why this works: A chunk that appears at rank 1 in one list and rank 3 in another gets a high combined score. A chunk that appears at rank 1 in many lists gets an even higher score. Rank position matters more than the raw similarity score — this makes the fusion robust to score scale differences between dense and sparse systems.
+After RRF, you have one merged ranked list of ~20-40 unique chunks.
+
+Part 5 — Cross-Encoder Re-ranking
+This is the most expensive step and the biggest quality jump.
+The difference between bi-encoders and cross-encoders:
+Bi-encoder (what you used for dense search)Cross-encoder (re-ranker)How it worksEncodes query and chunk separately, compares vectorsEncodes query + chunk together, outputs a relevance scoreSpeedFast (pre-compute chunk vectors)Slow (must run for every query-chunk pair)AccuracyGoodMuch better — sees interactions between query and chunk
+What happens:
+
+You take the top-20 chunks from RRF
+For each chunk, you feed [query, chunk_text] as a pair into cross-encoder/ms-marco-MiniLM-L-6-v2
+It outputs a single relevance score (not a vector)
+You re-sort by this score and take top-5
+
+The cross-encoder catches things like: the chunk mentions the query topic but in a contradicting or unrelated context — the bi-encoder would miss this, the cross-encoder catches it.
+If using Cohere Rerank API, you outsource this step — same idea, just a hosted model.
+
+Part 6 — Context Assembly + LLM Generation
+Top-5 chunks are assembled into a context block with source metadata (document name, page, chunk ID). This gets sent to the LLM via OpenRouter with a prompt like:
+Answer the question using only the provided context.
+Cite which source each claim comes from.
+
+Context:
+[Chunk 1 — source: doc_name.pdf, page 3] ...
+[Chunk 2 — source: url.com, para 7] ...
+
+Question: {user_query}
+The LLM generates an answer that cites [Source 1], [Source 2], etc. — so the user can see exactly which chunk each claim came from.
+
+Part 7 — The Eval System (This is what makes the project stand out)
+This is how you get real numbers to put in the README.
+You build a ground truth eval set — about 50-100 query/answer/relevant-doc triples. Example:
+json{
+  "query": "What is the capital of France?",
+  "ground_truth_answer": "Paris",
+  "relevant_chunk_ids": ["chunk_042", "chunk_107"]
+}
+Then you run both naive RAG and your hybrid system on every query and compute:
+NDCG@5 (Normalized Discounted Cumulative Gain)
+Measures whether relevant docs appear near the top of retrieved results. A relevant doc at rank 1 scores more than at rank 4. Normalized so max = 1.0. You compare naive vs hybrid.
+MRR (Mean Reciprocal Rank)
+For each query: what rank was the first relevant chunk? Score = 1/rank. Average across all queries. Tells you "does the right doc come up first?"
+Faithfulness (RAGAS)
+RAGAS sends the generated answer + source context to an LLM judge that checks: "Does every claim in the answer actually come from the retrieved context?" Score 0-1. Catches hallucinations where the LLM ignored the context.
+Latency
+You time both pipelines. Hybrid is obviously slower (query expansion + re-ranking adds ~1-2 seconds). The latency/quality tradeoff curve shows this honestly.
+
+Part 8 — The Streamlit UI
+Three tabs:
+Tab 1 — Chat: User types query → response appears with source citations below. Sidebar lets them upload docs and choose chunking strategy (fixed-size, sentence-boundary, etc.)
+Tab 2 — Eval Dashboard: A table showing naive RAG vs hybrid RAG side-by-side on the same queries. NDCG, MRR, faithfulness scores. This is your "proof" tab.
+Tab 3 — Retrieval Internals: Shows the retrieved chunks before and after re-ranking, with scores. You can see a chunk jump from rank 8 → rank 1 after re-ranking. This makes the system transparent and is great for debugging.
+
+The Full Flow, One More Time
+User Query
+  → LLM generates 3 variants (query expansion)
+  → All 4 queries hit Dense Search (ChromaDB) + Sparse Search (BM25) in parallel
+  → 8 ranked lists merged via RRF into 1 list of ~30 chunks
+  → Cross-encoder scores top-20, returns top-5
+  → Top-5 assembled as context
+  → LLM generates answer with citations
+  → Response shown with source panel
+
+The Build Order I'd Recommend
+
+Ingestion pipeline first — get chunking + ChromaDB + BM25 index working
+Naive RAG baseline — just dense search + LLM, no frills
+Build eval set — 50 queries with ground truth, measure naive baseline
+Add BM25 + RRF — measure improvement
+Add query expansion — measure improvement
+Add re-ranker — measure improvement (this gives the biggest jump)
+Build Streamlit UI — wrap everything
+Write README with real numbers — run eval one final time, copy the table
+
+Each step gives you a measurable delta, which means you can tell a story: "BM25 alone gave +8% NDCG, re-ranking gave another +18%." That's what makes this project impressive.
+Want me to start building any specific component?ok now explain to me each part in a detailed manner. why we are doing what we are doing and choosing these techniques and technologies. alternates as well4:32 PMOrchestrated comprehensive breakdown of decisions, rationales, and alternativesOrchestrated comprehensive breakdown of decisions, rationales, and alternativesDeep Dive: Every Decision, Every Why
+
+PART 1 — CHUNKING STRATEGY
+What is chunking and why does it exist?
+LLMs have a context window limit. You cannot feed a 200-page PDF into a prompt. Even if you could, attention degrades over long contexts — the model pays less attention to things buried in the middle. So you break documents into smaller pieces and only retrieve the relevant pieces.
+But here's the real problem: chunking is a lossy operation. Every time you split a document, you risk cutting a fact in half. A sentence that starts on page 3 and ends on page 4 might get split across two chunks. Neither chunk alone contains the complete fact.
+This is why chunking strategy is not trivial — it directly determines your retrieval ceiling. Bad chunking = no amount of fancy retrieval fixes it.
+
+The different chunking strategies
+Fixed-size chunking (what most people start with)
+Split every N tokens, regardless of sentence/paragraph boundaries.
+chunk_size = 512 tokens
+overlap = 50 tokens
+The overlap means chunk 2 starts 50 tokens before chunk 1 ends. This handles the boundary problem partially.
+
+✅ Simple, predictable, fast
+❌ Cuts sentences mid-thought, no semantic awareness
+❌ A 512-token chunk might have 3 unrelated topics crammed together
+
+Sentence-boundary chunking
+Use a sentence tokenizer (spaCy, NLTK) to only cut at sentence ends. Group sentences until you hit the token limit.
+
+✅ Preserves grammatical units
+❌ Sentence lengths vary wildly — some chunks are 50 tokens, some are 400
+❌ A paragraph might span 20 short sentences and one very long thought
+
+Recursive character splitting (LangChain's approach)
+Try to split on paragraphs first (\n\n), then sentences, then words, then characters — in order of preference. Only go to the next level if the chunk is still too big.
+
+✅ Respects document structure when possible
+✅ Falls back gracefully
+✅ This is the most practical general-purpose strategy
+
+Semantic chunking
+Embed every sentence. When the cosine similarity between consecutive sentences drops below a threshold, that's a topic boundary — cut there.
+
+✅ Chunks actually correspond to coherent topics
+❌ Expensive — you're embedding every single sentence during ingestion
+❌ Threshold tuning is tricky
+❌ Overkill for most use cases
+
+Document-structure-aware chunking
+For PDFs: respect headings, sections, bullet points. For code: respect function/class boundaries. For HTML: respect <section>, <article> tags.
+
+✅ Best quality if your documents have consistent structure
+❌ Brittle — real-world PDFs are messy, headings don't always parse cleanly
+
+
+Why this project uses fixed-size with overlap + lets user choose
+You expose chunking strategy as a sidebar selector because there is no universally best strategy. Legal documents → sentence boundary. Code → function-level. Wikipedia-style articles → recursive. Giving the user control and showing how it affects retrieval quality is itself a learning.
+The overlap of 50-100 tokens is non-negotiable. It's cheap insurance against boundary cuts.
+
+What token size to choose
+Chunk sizeGood forProblem128-256 tokensPrecise, specific factsLoses context — a fact without surrounding context is ambiguous512 tokensGeneral purpose sweet spotSome topic mixing1024+ tokensLong-form reasoningDense chunks hurt precision — many irrelevant sentences
+The all-MiniLM-L6-v2 model has a 512-token maximum input. Anything longer gets truncated silently. So your chunk size should never exceed 512 tokens for this embedding model. This is a constraint that shapes everything downstream.
+
+PART 2 — EMBEDDINGS & DENSE SEARCH
+What embeddings actually are
+An embedding model converts text into a vector — a list of ~384 floating point numbers (for MiniLM). These numbers encode semantic meaning in a geometric space. Sentences with similar meanings have vectors that point in similar directions (high cosine similarity).
+"The cat sat on the mat"  →  [0.23, -0.87, 0.12, ...]  (384 numbers)
+"A feline rested on a rug" →  [0.21, -0.84, 0.15, ...]  (similar direction)
+"Stock markets rallied"    →  [-0.45, 0.33, -0.67, ...]  (very different)
+The model was trained via contrastive learning — pairs of semantically similar sentences were pulled together in vector space, dissimilar ones pushed apart. It learned what "similar meaning" means across millions of examples.
+
+Why all-MiniLM-L6-v2 specifically
+sentence-transformers library has dozens of models. Here's how they compare:
+ModelDimensionsSpeedQualityMTEB Scoreall-MiniLM-L6-v2384Very fastGood~56all-MiniLM-L12-v2384FastBetter~59all-mpnet-base-v2768SlowerGreat~63bge-large-en-v1.51024SlowExcellent~64text-embedding-3-small (OpenAI)1536API callExcellent~62text-embedding-3-large (OpenAI)3072API callBest~64
+For a portfolio project: all-MiniLM-L6-v2 is the right choice because:
+
+Runs locally, no API cost
+Fast enough to embed thousands of chunks in seconds
+Good enough quality for the eval numbers to show real improvement
+Everyone in the field knows this model — it's a credible baseline
+
+When you'd upgrade: Production system with budget → bge-large-en-v1.5 or OpenAI text-embedding-3-large. Better MTEB scores mean better retrieval floors.
+
+Why ChromaDB
+Vector databases store embeddings and let you query by similarity. Here's the landscape:
+DBTypeGood forChromaDBLocal/embeddedDevelopment, portfolios, small-medium corporaFAISSLocal libraryPure speed, no persistence, researchPineconeManaged cloudProduction, no infra management, $$WeaviateSelf-hosted/cloudProduction, hybrid search built-inQdrantSelf-hosted/cloudProduction, great filtering, Rust performancepgvectorPostgres extensionAlready using Postgres, want SQL+vectorsMilvusSelf-hostedMassive scale (billions of vectors)
+ChromaDB runs entirely in-process — no server to spin up, no Docker, just pip install chromadb. For a portfolio project this is exactly right. The code stays simple. Anyone can clone and run it.
+The weakness of ChromaDB: it uses HNSW (Hierarchical Navigable Small World) for approximate nearest neighbor search. HNSW is excellent but at 10M+ vectors it gets slow. For your use case (thousands to tens of thousands of chunks), it's perfect.
+
+What HNSW actually does (so you can explain it in interviews)
+Brute-force vector search = compare your query vector against every stored vector. At 100K vectors × 384 dimensions, that's 38.4M multiplications per query. Slow.
+HNSW builds a multi-layer graph. Top layers have few nodes with long-range connections. Bottom layers are dense with local connections. Search starts at the top, navigates toward similar nodes, drops to lower layers for refinement. It finds approximate nearest neighbors in O(log n) time instead of O(n).
+The tradeoff: it's approximate — it might miss the true nearest neighbor 1-2% of the time. For RAG this is acceptable.
+
+PART 3 — SPARSE SEARCH (BM25)
+The fundamental limitation of dense search
+Dense search understands meaning but is bad at exact term matching. Consider:
+
+Query: "What is the error code E-4302 in the manual?"
+Dense search finds chunks about error handling, error codes generally, manual sections about errors
+BM25 finds the exact chunk containing "E-4302" because it looks for term frequency
+
+For technical documentation, medical terms, legal citations, product codes, names — BM25 often wins. Dense search has no concept of "this specific string matters."
+
+How BM25 actually works
+BM25 is a probabilistic retrieval model. The score for a document D given query Q is:
+BM25(D, Q) = Σ IDF(qi) × [f(qi, D) × (k1 + 1)] / [f(qi, D) + k1 × (1 - b + b × |D|/avgdl)]
+Breaking this down:
+
+f(qi, D) = how many times query term qi appears in document D (term frequency)
+IDF(qi) = inverse document frequency — rare terms score higher than common terms. "The" appears everywhere so it has near-zero IDF. "Metformin" appears rarely so it has high IDF
+|D|/avgdl = document length normalization — a long document mentioning a term once shouldn't beat a short document mentioning it once
+k1 (usually 1.2-2.0) = term frequency saturation — prevents a term appearing 100 times from scoring 100× better than appearing 5 times
+b (usually 0.75) = length normalization strength
+
+BM25 requires no training, no GPU, no API. It's pure statistics on term frequencies.
+Alternatives to BM25:
+MethodWhat it isvs BM25TF-IDFOlder predecessorBM25 strictly better — added length normalization and saturationSPLADELearned sparse embeddingsBetter quality, needs GPU/model, not truly "sparse"BM25+BM25 variantFixes some edge cases with very low term frequenciesElasticsearchBM25 under the hoodSame algorithm, just distributed and production-grade
+rank_bm25 library is a pure Python BM25 implementation. Dead simple. You tokenize chunks, build an index, query it. For a portfolio project this is perfect. Production system? Elasticsearch would be more appropriate.
+
+The information retrieval insight
+Why does hybrid work? It comes from a paper observation: dense and sparse retrievers have low overlap in their failure modes. When dense fails, sparse often succeeds, and vice versa. Studies on BEIR benchmark consistently show hybrid outperforms either alone by 5-15% NDCG. This is the empirical justification for the whole approach.
+
+PART 4 — QUERY EXPANSION
+Why queries fail
+Users write short, ambiguous queries. "Python memory issue" could mean:
+
+Memory leak in Python code
+Python's garbage collection behavior
+RAM usage of Python processes
+Python's memory model (references, etc.)
+
+A single embedding of this query captures one semantic direction. Expansion generates phrasings that cover multiple directions.
+
+How you implement it
+You prompt the LLM:
+You are a search query optimizer. Given a user's question, generate 3 
+alternative phrasings that:
+- Preserve the original intent
+- Use different vocabulary
+- Approach the topic from different angles
+
+Return as a JSON array of strings.
+
+Original question: {query}
+The LLM returns:
+json["Python memory leak detection", 
+ "how to fix high RAM usage in Python program", 
+ "Python garbage collection and memory management"]
+You now search all 4 queries (original + 3 variants) and fuse results.
+
+Alternatives to LLM-based expansion
+MethodHowTradeoffLLM expansion (your approach)Prompt LLM to rephraseHigh quality, adds latency, costs tokensHyDE (Hypothetical Document Embedding)Ask LLM to write a hypothetical answer, embed thatSurprisingly effective, different failure modesWordNet/thesaurus expansionReplace words with synonymsFast, free, often generates weird phrasingsT5/BART paraphrase modelsSmall local model generates paraphrasesFree, fast, lower quality than LLMPRF (Pseudo Relevance Feedback)Take top-3 initial results, extract keywords, re-queryClassic IR technique, can drift topic
+HyDE is particularly interesting and worth knowing about: instead of rephrasing the question, you ask the LLM "Write a paragraph that would answer this question" — then embed that hypothetical answer. The intuition is that a good answer is closer in embedding space to relevant chunks than the question itself. Works surprisingly well.
+
+The cost/latency math
+Query expansion adds one LLM call before retrieval. With OpenRouter at ~$0.001 per query, that's negligible. Latency-wise, it's 500ms-1s. For a chatbot this is acceptable. For a high-throughput system (1000 QPS) it becomes a bottleneck — you'd cache expansion results or use a smaller local model.
+
+PART 5 — RECIPROCAL RANK FUSION
+The merge problem
+After running 4 queries × 2 retrieval methods = 8 ranked lists, each with up to 20 results, you have a messy collection of overlapping chunks with inconsistent scores.
+Can you just average the scores? No. BM25 scores and cosine similarity scores are on completely different scales. BM25 might return scores of 2.3, 1.8, 1.2. Cosine similarity returns 0.87, 0.82, 0.79. A direct average would be dominated by BM25's scale.
+Could you normalize them? You could min-max normalize each list, then average. This is called linear combination fusion and it works but has a problem: it's sensitive to outliers. If BM25 returns one super high-scoring document and the rest are low, normalization distorts everything.
+
+Why RRF is elegant
+RRF doesn't use scores at all. Only ranks matter.
+RRF_score(chunk) = Σ  1 / (60 + rank_in_list_i)
+For each of your 8 lists, if a chunk appears at rank r, it contributes 1/(60+r) to its total score.
+Why 60? It's a smoothing constant that prevents rank 1 from being overwhelmingly dominant. Empirically, 60 was found to work well in the original RRF paper (Cormack et al., 2009). Some implementations use 0 or smaller values — this gives more weight to top ranks.
+Example:
+Chunk A:
+
+Dense search on query 1: rank 3 → contributes 1/63 = 0.0159
+Sparse search on query 1: rank 1 → contributes 1/61 = 0.0164
+Dense search on query 2: rank 5 → contributes 1/65 = 0.0154
+Doesn't appear in other lists
+
+Total = 0.0477
+Chunk B:
+
+Appears at rank 12 in all 8 lists
+Each contributes 1/72 = 0.0139
+Total = 0.111
+
+Chunk B wins despite never being ranked highly anywhere — it was consistently relevant across all query variants. This is the insight: consistency beats one-off high ranks.
+
+Alternatives to RRF
+MethodHowTradeoffRRF (yours)Rank-based, no score scale issuesNo tuning needed, robustWeighted sumα × dense_score + β × sparse_scoreNeeds careful tuning of α,βCombSUMSum normalized scoresScale-sensitiveLearned fusionTrain a model to fuse resultsBest quality, needs training dataWeaviate's hybridBuilt-in fusionIf you were using Weaviate, skip writing this yourself
+RRF is the standard for good reason — it requires no tuning and performs within 1-2% of learned fusion methods.
+
+PART 6 — CROSS-ENCODER RE-RANKING
+The fundamental accuracy gap
+The bi-encoder (what you used for dense search) has a clever but flawed architecture:
+Query  →  Encoder  →  Query vector  ─┐
+                                      ├→ cosine similarity
+Chunk  →  Encoder  →  Chunk vector  ─┘
+Query and chunk are encoded separately. The model never sees them together. It can't notice that the chunk mentions the query topic but in a completely different context. It can't understand negation ("this is NOT about X"), qualification ("rarely related to X"), or complex interactions.
+The cross-encoder sees them together:
+[CLS] Query [SEP] Chunk [SEP]  →  Encoder  →  Single relevance score
+The full attention mechanism runs over both simultaneously. Every word in the query can attend to every word in the chunk. It catches:
+
+The chunk contains query terms but in an unrelated context
+The chunk is about the query topic but contradicts rather than answers
+Subtle qualifications ("in some cases, X — but for your use case, Y")
+
+
+Why not use cross-encoder for everything?
+Speed.
+For dense search, you pre-compute chunk embeddings offline. At query time, you only embed the query (one forward pass) and do a vector similarity search (fast math). Total: ~10ms.
+For cross-encoder, you must run a forward pass for every query-chunk pair at query time. You can't pre-compute anything. At 10,000 stored chunks, that's 10,000 forward passes per query. Total: minutes.
+The solution your architecture uses: bi-encoder to get to top-20, cross-encoder only on those 20. This is called a retrieval-reranking pipeline or two-stage retrieval. Stage 1 (recall): get the probably-relevant candidates fast. Stage 2 (precision): precisely rank those candidates accurately.
+
+The two re-ranking options
+Local: cross-encoder/ms-marco-MiniLM-L-6-v2
+
+Trained on MS MARCO passage ranking dataset (massive Microsoft QA dataset)
+Runs on CPU, ~50-100ms for 20 chunks
+Free, no API key, works offline
+Good quality for general-purpose QA
+
+Cohere Rerank API
+
+API call, ~200ms latency
+Costs money (~$1 per 1000 queries)
+Slightly better quality for non-English, multilingual
+Easier to implement (one API call vs local model management)
+
+For a portfolio project: start with the local model. It keeps the system self-contained and shows you understand the technology. Add Cohere as an option flag.
+Other alternatives:
+
+ms-marco-electra-base — larger, more accurate, slower
+bge-reranker-large — excellent, especially for Chinese/multilingual
+Cohere Rerank v3 — current best API option
+Jina Reranker — good API alternative to Cohere
+GPT-4 as reranker — prompt it to score relevance 0-10, slow and expensive but highest quality
+
+
+PART 7 — EVALUATION METRICS
+Why you need an eval set
+Without measurement, you're guessing. "The answers seem better" is not publishable, not credible, and not useful for understanding where your system fails. The eval set is what turns this from a demo into a serious project.
+
+NDCG@5 — Normalized Discounted Cumulative Gain
+The most standard metric in information retrieval.
+DCG (raw version):
+DCG@5 = Σ relevance(rank_i) / log2(rank_i + 1)
+If you retrieve 5 chunks and the relevance scores (0=irrelevant, 1=relevant) are [1, 0, 1, 0, 1]:
+DCG@5 = 1/log2(2) + 0/log2(3) + 1/log2(4) + 0/log2(5) + 1/log2(6)
+      = 1.0 + 0 + 0.5 + 0 + 0.387 = 1.887
+The denominator log2(rank+1) is the discount — a relevant doc at rank 1 is worth more than at rank 5. Getting the right answer at the top matters.
+NDCG = DCG / IDCG, where IDCG is the DCG of the ideal ranking (all relevant docs first). This normalizes to 0-1.
+For your project:
+
+Naive RAG: NDCG@5 ≈ 0.45-0.55 (typical for basic dense retrieval)
+Hybrid + reranking: NDCG@5 ≈ 0.65-0.75 (the improvement you'll measure)
+
+
+MRR — Mean Reciprocal Rank
+Simpler than NDCG. For each query: what rank was the first relevant document?
+MRR = (1/|queries|) × Σ 1/rank_of_first_relevant_doc
+If you have 3 queries and the first relevant doc appeared at ranks 1, 3, and 2:
+MRR = (1/3) × (1/1 + 1/3 + 1/2) = (1/3) × 1.833 = 0.611
+MRR answers: "How often does the right answer come first?" It's particularly useful when you only show the user one result or when rank 1 matters disproportionately.
+
+Faithfulness (RAGAS)
+NDCG and MRR measure retrieval quality — did you find the right chunks? Faithfulness measures generation quality — did the LLM actually use those chunks honestly?
+RAGAS uses an LLM judge to answer: "For each claim in the generated answer, can that claim be directly inferred from the retrieved context?"
+Faithfulness = (# claims supported by context) / (# total claims in answer)
+This catches hallucination. A model might retrieve perfect chunks but then ignore them and make up an answer from its training data. Faithfulness = 0.6 means 40% of claims are hallucinated or unsupported.
+Why naive RAG scores lower on faithfulness: With poor retrieval, the context is irrelevant. The LLM, lacking good context to ground itself, falls back on its parametric knowledge (training data). This looks like an answer but it's not grounded in your documents.
+Other RAGAS metrics you can add:
+
+Answer Relevancy — does the answer actually address the question?
+Context Precision — are the retrieved chunks actually relevant to the question?
+Context Recall — did you retrieve all the relevant information that exists?
+
+
+Building the eval set
+This is the hardest part. You have two options:
+Manual: Write 50-100 queries yourself from your document corpus. For each, annotate which chunks are relevant. Time-consuming but highest quality.
+LLM-generated: Prompt an LLM: "Given this chunk, generate 3 questions that this chunk would answer." Saves time but can be circular — the LLM generates questions the retriever finds easy.
+Best practice: LLM generates candidates, human reviews and filters. The human filter matters — LLMs generate softball questions that don't test edge cases.
+
+PART 8 — THE LLM LAYER (OpenRouter)
+Why OpenRouter
+OpenRouter is a meta-API — one API key, access to 100+ models from Anthropic, OpenAI, Meta, Mistral, Google, etc. You use the same OpenAI-compatible API format regardless of which model you pick.
+Why not call OpenAI/Anthropic directly?
+
+For a portfolio project, you want model flexibility — you can benchmark Llama vs Mistral vs Claude
+Cheaper models for experimentation
+No commitment to one provider
+
+Model choice for this project:
+
+meta-llama/llama-3-70b-instruct — excellent, free tier on some providers
+mistralai/mixtral-8x7b-instruct — great instruction following, cheaper
+anthropic/claude-3-haiku — fast, cheap, very good at following citation instructions
+
+The LLM's job here is narrow: given 5 chunks of text and a question, synthesize an answer. This is a low-complexity task for modern LLMs — even smaller models do it well if your retrieval is good. This is the key insight: retrieval quality matters more than LLM quality for RAG.
+
+PART 9 — STREAMLIT UI
+Why Streamlit
+Streamlit turns Python scripts into web apps with no frontend code. You write Python, it renders UI. For a portfolio project this is exactly right — you're demonstrating RAG expertise, not frontend expertise.
+Alternatives:
+ToolGood forStreamlitFastest to build, Python-native, great for demosGradioEven simpler, ML-focused, but less customizableFastAPI + ReactProduction-grade, shows full-stack skills, takes 10× longerChainlitBuilt specifically for LLM chat UIs, better chat experience than Streamlit
+If you want to level up the project later: replace Streamlit with Chainlit for the chat interface. It handles streaming responses, conversation history, and source citations natively.
+
+The Big Picture: Why This Stack Wins
+Here's the honest architecture evaluation:
+What you could have done instead:
+LangChain or LlamaIndex would let you build this in 50 lines. But:
+
+They abstract away exactly the parts that matter for understanding
+You can't explain what RRF is doing if LangChain does it for you
+The abstractions hide failure modes
+
+Building it from primitives means:
+
+You understand every component
+You can debug why retrieval failed for a specific query
+You can explain the system in an interview at any level of depth
+The eval system you build actually tests what you built, not a black box
+
+This is the difference between a project that demonstrates RAG knowledge and one that demonstrates you can install LangChain.
+
+Want me to now write the actual code for any specific component, starting with the ingestion pipeline or the eval system?but first i am thinking of expaning a scope a little bit. make my own streamlit UI which lets me build custom RAGs. User can create new RAGs with form clicks (delete them as well) and the custom RAG will have all the alternatives you added here as form dropdowns and will build their own custom RAG. after creating RAG user can then access the ingestion pipelines and retrival chats and evals under each RAG. or i dont know what is a better user flow for this.4:52 PMEnvisioned streamlined UI architecture for custom RAG builderEnvisioned streamlined UI architecture for custom RAG builderBefore writing any code, let me design the full user flow and UI so you can validate the experience first. Here's an interactive mockup you can click through:
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation-duration: 0.25s;
+    animation-timing-function: cubic-bezier(0.19, 1, 0.22, 1);
+  }
+VvisualizeVvisualize show_widgetClick through the sidebar RAGs, the "New RAG" button, and all 5 tabs in the workspace. Now let me explain every design decision.
+
+The User Flow I Designed
+Screen 1 — Home (RAG Manager)
+When you land, you see a card grid of all your RAGs. Each card shows the name, what retrieval mode it uses, doc count, and when it was last used. This is your "project list" view. The "New RAG" card in the grid and the sidebar button both open the creation form.
+Why a home screen at all instead of just the sidebar? Because when you have 8+ RAGs, the sidebar alone becomes a scrollable list with no context. The card grid gives you a dashboard-level overview — you can compare configs at a glance.
+Screen 2 — Create RAG Form
+This is where all the technical decisions live, presented as grouped dropdowns. The groups map exactly to the pipeline stages we discussed: Chunking → Embeddings → Retrieval Strategy → Re-ranking → Generation. The user makes choices in order, which mirrors how data actually flows through the system.
+One critical UX note: editing config after creation forces re-ingestion. This is shown as a warning on the Config tab. The reason is that if you change your embedding model, all existing vectors are now wrong — they were computed with a different model. The system needs to re-embed everything. This constraint should be surfaced early and clearly.
+Screen 3 — The Workspace (5 tabs)
+Ingest tab — Upload docs, paste URLs, see what's already in the corpus with chunk counts. Simple and functional. This is where the ingestion pipeline runs.
+Chat tab — The actual RAG interface. Query → response with source citations as chips below the answer. Clean and minimal.
+Eval tab — The most important tab for your project. Shows the 4 key metrics (NDCG@5, MRR, Faithfulness, Latency) as metric cards with delta vs naive. Below that, a query-level breakdown table so you can see exactly which queries improved and which didn't. The "Run eval" button triggers the full benchmark.
+Internals tab — This is what makes your project stand out from a basic RAG demo. It shows retrieved chunks before and after re-ranking, with their scores and rank deltas. You can see a chunk jump from rank 3 → rank 2 after the cross-encoder. This makes the system transparent and explainable — crucial for interviews.
+Config tab — A read-only summary of the current configuration with an edit button and the delete option. Separating config from the creation form means you always know what a running RAG is configured as.
+
+The Key Architectural Decisions for the Code
+State management is the hardest part of this app. Each RAG needs to persist: its configuration, its ChromaDB collection, its BM25 index, and its eval results. In Streamlit this means you'll use st.session_state as a dictionary keyed by RAG ID, and serialize configs to a JSON file on disk so they survive app restarts. The ChromaDB collection name becomes the RAG ID.
+One ChromaDB collection per RAG — this is the natural isolation boundary. When a user deletes a RAG, you delete the collection. When they switch RAGs in the sidebar, you switch which collection you're querying.
+The config-lock problem — once a RAG has ingested documents, the embedding model is locked. You should grey out the embedding model dropdown on the Edit form and show a tooltip explaining why. If they really want to change it, they delete and recreate.
+
+What to Build First (Order of Work)
+
+The sidebar + RAG creation form + JSON persistence (no ML yet, just the shell)
+Ingest tab with chunking + ChromaDB + BM25 per RAG
+Chat tab with naive retrieval first, just to have something working
+Layer in BM25, RRF, re-ranker one by one
+Eval tab last — requires a working pipeline to benchmark
+
+Want me to start writing the code, beginning with the project structure and the state management layer?just an idiot quest. but when you say evaluation you mean eval for RAG architechture for for retrival or is it something else entirely?4:58 PMGreat question, not idiotic at all — "eval" is an overloaded term in ML.
+
+There are 3 different things people mean by "eval"
+1. Retrieval Eval (what this project does)
+Did you fetch the right chunks from your document corpus?
+You have ground truth: for query Q, chunk C is the correct answer. You measure whether your retrieval system actually returned chunk C, and at what rank.
+Metrics: NDCG@5, MRR, Precision@K — all purely about did the right document come back?
+This has nothing to do with the LLM. You could swap the LLM out entirely and the retrieval score wouldn't change.
+2. Generation Eval (also what this project does, via RAGAS)
+Given that you retrieved some chunks, did the LLM produce a good answer from them?
+This is where Faithfulness lives — an LLM judge reads the generated answer and the source chunks and asks "did the model make up anything, or is every claim grounded in the context?"
+Also includes Answer Relevancy — did the answer actually address the question, or did it go off on a tangent?
+This is about LLM behavior on top of retrieved context.
+3. Model Eval / LLM Eval (completely different world)
+This is evaluating the LLM itself — benchmarks like MMLU, HumanEval, HellaSwag, GPQA. Testing whether a model can do math, write code, reason logically, pass medical exams.
+This is what Anthropic, OpenAI, and Google do when they release a new model. It has nothing to do with RAG.
+
+So in your project
+When you say "Eval dashboard" you mean both 1 and 2 — retrieval quality and generation quality — measured against a small custom test set you build from your own documents. It's not model eval at all. You're evaluating your pipeline, not the underlying LLM.
+The pipeline is what you built. The LLM is just a component inside it.ok so each new RAG created will be tested against the same custom test and then scored?5:01 PMNot exactly — and this is an important design decision.
+
+The problem with one shared test set
+Each RAG you create will likely have completely different documents. MedRAG has cardiology PDFs. LegalRAG has contracts. TechDocs has engineering manuals.
+A test set built from cardiology questions is meaningless when run against a legal document corpus. The queries won't match anything, chunks won't be found, and every metric will be garbage — not because your pipeline is bad, but because you're asking the wrong questions of the wrong documents.
+
+So eval is per-RAG, not global
+Each RAG has its own eval set, built from its own documents.
+The flow is:
+Create RAG → Ingest documents → Build eval set for THIS corpus → Run eval → See scores
+The eval set lives inside the RAG, tied to its specific document collection.
+
+How you build the eval set
+You have two options and you should offer both in the UI.
+Option 1 — Auto-generate (LLM-assisted)
+You take random chunks from the ingested documents and prompt an LLM to generate question-answer pairs from them.
+Given this passage, generate a question that this passage answers,
+and the ideal answer. Return JSON.
+
+Passage: [chunk text]
+You get 50-100 query/answer/source-chunk triples automatically. Fast, but the questions tend to be easy — the LLM generates questions the retriever finds trivial.
+Option 2 — Manual upload
+User provides a CSV with columns: query, ideal_answer, relevant_chunk_id. They wrote these themselves or pulled them from real user queries. Higher quality, catches real failure modes.
+
+What the eval actually measures then
+For each query in the eval set, you run the full pipeline and measure:
+
+Did it retrieve the chunk that the answer came from? → retrieval metrics
+Is the generated answer faithful to that chunk? → generation metrics
+How does hybrid pipeline score vs if you had used naive retrieval on the same query? → the comparison that makes the project interesting
+
+The naive vs hybrid comparison runs on the same eval set, same queries, same documents — just two different retrieval pipelines. That comparison is valid and meaningful because everything else is held constant.
+
+The one thing you CAN compare globally
+If you wanted a leaderboard across all your RAGs, you could track relative improvement — how much better is hybrid vs naive for each RAG, expressed as a percentage. That's pipeline comparison, not corpus comparison, and it's a valid cross-RAG metric.
+Something like: MedRAG saw +27% NDCG, LegalRAG saw +31% NDCG, TechDocs saw +18% NDCG. That tells you the hybrid pipeline consistently outperforms naive regardless of domain, which is actually a strong result to show.
+Want to start building now?what about the backend how will it work and look like in detail? dont code it. i just want to understand in depth about the entire architechture now that we have custom RAGs.5:14 PM2 / 2Architected comprehensive backend framework encompassing structure, state, persistence, and integration layersArchitected comprehensive backend framework encompassing structure, state, persistence, and integration layersThe Full Backend Architecture
+
+Layer 1 — How the App is Structured on Disk
+Everything in this app lives in one of three places: the code that defines behavior, the config that defines each RAG's settings, and the data that each RAG has produced from ingestion.
+rag-builder/
+│
+├── app.py                    ← Streamlit entry point
+│
+├── core/                     ← All backend logic, no Streamlit here
+│   ├── chunker.py            ← All chunking strategies
+│   ├── embedder.py           ← Embedding model wrapper
+│   ├── retriever.py          ← Dense + sparse + fusion
+│   ├── reranker.py           ← Cross-encoder / Cohere
+│   ├── generator.py          ← LLM call via OpenRouter
+│   ├── query_expander.py     ← LLM query expansion / HyDE
+│   ├── pipeline.py           ← Orchestrates all of the above
+│   └── evaluator.py          ← NDCG, MRR, RAGAS metrics
+│
+├── store/                    ← All persistent data lives here
+│   ├── rags.json             ← Master registry of all RAGs
+│   │
+│   ├── medrag/               ← One folder per RAG
+│   │   ├── config.json       ← This RAG's component choices
+│   │   ├── bm25_index.pkl    ← Serialized BM25 index
+│   │   ├── eval_set.json     ← This RAG's test queries
+│   │   └── eval_results.json ← Last eval run scores
+│   │
+│   ├── legalrag/
+│   │   └── ...
+│   │
+│   └── chroma_db/            ← Single ChromaDB instance
+│       ├── medrag/           ← One collection per RAG
+│       ├── legalrag/
+│       └── techrag/
+│
+└── ui/                       ← Streamlit page components
+    ├── home.py
+    ├── create.py
+    ├── ingest.py
+    ├── chat.py
+    ├── eval.py
+    └── internals.py
+The critical separation is that core/ knows nothing about Streamlit. It's pure Python logic. ui/ knows nothing about ML — it just calls core/ and renders results. This separation means you can test the backend independently and swap the frontend later.
+
+Layer 2 — The RAG Registry
+rags.json is the master list. It's the first thing the app reads on startup.
+rags.json contains:
+[
+  { id: "medrag", name: "MedRAG", created_at: ..., doc_count: 3, chunk_count: 847 },
+  { id: "legalrag", name: "LegalRAG", created_at: ..., doc_count: 1, chunk_count: 220 },
+]
+This is how the sidebar gets populated. When you create a new RAG, you write a new entry here. When you delete one, you remove the entry, delete its folder, and drop its ChromaDB collection.
+Each RAG's detailed configuration lives in its own config.json:
+store/medrag/config.json contains:
+{
+  chunking_strategy: "recursive",
+  chunk_size: 512,
+  overlap: 50,
+  embedding_model: "all-MiniLM-L6-v2",
+  vector_store: "chromadb",
+  sparse_search: "bm25",
+  fusion_method: "rrf",
+  query_expansion: "llm_variants",
+  reranker: "cross_encoder",
+  top_k_retrieval: 20,
+  top_k_final: 5,
+  llm: "meta-llama/llama-3-70b",
+  temperature: 0.0
+}
+This config is immutable after ingestion for the embedding model field. Everything else can be changed without re-ingesting because BM25, fusion, re-ranking, and query expansion operate on top of already-stored vectors.
+
+Layer 3 — The Data Layer (How Each RAG Stores Its Data)
+Each RAG has three data structures that it owns.
+The ChromaDB Collection
+ChromaDB runs as a single local instance pointing at store/chroma_db/. Inside it, each RAG has its own named collection — medrag, legalrag, etc.
+A collection stores, for each chunk:
+
+The raw text of the chunk
+Its 384-dimensional embedding vector
+Metadata: source filename, page number, chunk index, chunk size
+
+When you query, you pass in a query vector and ChromaDB returns the top-K most similar chunks by cosine similarity. That's the dense search side.
+Collections are fully isolated. Querying medrag collection never touches legalrag data. Deleting a RAG means calling client.delete_collection("medrag") — clean and complete.
+The BM25 Index
+BM25 can't be stored inside ChromaDB — it's a completely separate data structure. The rank_bm25 library builds an in-memory index from a list of tokenized documents.
+The problem: Python objects can't survive app restarts. So after building the index during ingestion, you serialize it with pickle and save it as store/medrag/bm25_index.pkl. On startup, when someone selects MedRAG, you deserialize it back into memory.
+The index contains: the tokenized text of every chunk, their IDF weights, and their chunk IDs (which match the ChromaDB chunk IDs so you can merge results).
+This chunk ID matching is crucial. When BM25 returns its ranked list and ChromaDB returns its ranked list, you need to merge them. Both systems must use the same IDs so RRF can reconcile "chunk_042 appeared at rank 3 in BM25 and rank 7 in dense search."
+The Eval Set
+store/medrag/eval_set.json contains the list of test queries:
+[
+  {
+    query: "What is the first-line treatment for type 2 diabetes?",
+    ideal_answer: "Metformin, unless contraindicated...",
+    relevant_chunk_ids: ["chunk_042", "chunk_107"],
+    source_doc: "diabetes_guidelines_2024.pdf"
+  },
+  ...
+]
+eval_results.json stores the last run's output — scores per query, aggregate metrics, naive vs hybrid comparison. This means the eval tab loads instantly when you open it — it reads cached results. You only re-run eval when you click the "Run eval" button.
+
+Layer 4 — The Pipeline Object
+This is the heart of the backend. When a RAG is selected, you instantiate a Pipeline object configured with that RAG's settings.
+Pipeline
+  └── knows its config (from config.json)
+  └── holds a reference to the ChromaDB collection
+  └── holds a reference to the BM25 index
+  └── has methods:
+       .ingest(file) → chunks → embeds → stores in both indexes
+       .query(text) → returns answer + sources + internals
+       .evaluate(eval_set) → returns metrics dict
+The .query() method is where all the action happens. Here's the exact sequence of what happens when a user sends a message in the chat tab:
+Step 1 — Query expansion (if enabled)
+The raw query goes to the LLM. Returns 3 variants. You now have 4 queries.
+Step 2 — Dense retrieval
+Each of the 4 queries gets embedded. Each embedding goes into ChromaDB. You get 4 ranked lists of up to 20 chunks each, with cosine similarity scores.
+Step 3 — Sparse retrieval (if BM25 enabled)
+Each of the 4 queries gets tokenized. Each goes into the BM25 index. You get 4 more ranked lists.
+Step 4 — RRF fusion
+All 8 lists (or 4 if dense-only) get merged via RRF. Output: one ranked list of unique chunks with RRF scores.
+Step 5 — Re-ranking (if enabled)
+Top-20 chunks from RRF go into the cross-encoder as query-chunk pairs. Each pair gets a relevance score. Re-sort. Take top-5.
+Step 6 — Context assembly
+Top-5 chunks are formatted into a context block with source metadata.
+Step 7 — LLM generation
+Context + original query goes to OpenRouter. Response comes back with citations.
+Step 8 — Return the full internals
+The pipeline returns not just the answer, but everything that happened: what the query variants were, what each retrieval method returned, pre- and post-rerank rankings, scores at each stage. This is what the Internals tab displays.
+
+Layer 5 — Session State (How Streamlit Holds It All Together)
+Streamlit reruns the entire script on every user interaction. This means every variable is reset unless you explicitly persist it in st.session_state. Session state is a dictionary that survives reruns within one browser session.
+Your session state has this shape:
+st.session_state = {
+  "active_rag_id": "medrag",
+  "active_pipeline": <Pipeline object>,
+  "active_tab": "chat",
+  "chat_history": [
+    { role: "user", content: "..." },
+    { role: "assistant", content: "...", sources: [...] }
+  ],
+  "last_internals": { ... },
+  "all_rags": [ ... ]   ← loaded from rags.json at startup
+}
+The active_pipeline object is the expensive thing. When a user clicks a different RAG in the sidebar, you check if the pipeline is already loaded for that RAG. If not, you instantiate a new Pipeline — which means loading the ChromaDB collection reference and deserializing the BM25 pickle from disk. This takes 1-3 seconds. After that, switching back to an already-loaded RAG is instant because the Pipeline object lives in session state.
+
+Layer 6 — The Evaluator
+The evaluator is a separate component that the pipeline calls. It does two things.
+Retrieval metrics (NDCG, MRR) — these are computed entirely locally, no API calls needed. You run the retrieval stages of the pipeline (no LLM generation) for each eval query, get the ranked chunk list, compare it to the relevant_chunk_ids in the eval set, and compute the math. You also run naive retrieval (dense only, no expansion, no reranking) on the same queries to get the baseline.
+Generation metrics (Faithfulness via RAGAS) — these require an LLM judge. RAGAS sends each generated answer along with its source chunks to an LLM and asks it to verify every claim. This is expensive — it makes one LLM call per eval query. On a 50-query eval set, that's 50 API calls just for the faithfulness score. This is why you cache results and don't run eval on every chat message.
+The evaluator outputs one dictionary:
+{
+  naive: { ndcg: 0.56, mrr: 0.63, faithfulness: 0.60, avg_latency: 0.7 },
+  hybrid: { ndcg: 0.71, mrr: 0.83, faithfulness: 0.79, avg_latency: 1.8 },
+  per_query: [
+    { query: "...", naive_rank: 3, hybrid_rank: 1, faithful: true },
+    ...
+  ]
+}
+This gets written to eval_results.json and the eval tab renders it.
+
+The Config Lock Problem in Detail
+When a user creates a RAG and then ingests documents, the embedding model is "locked in" because the vectors stored in ChromaDB were computed with that specific model. Model A's vector space is completely incompatible with Model B's. A query embedded with Model B will not meaningfully match chunks embedded with Model A.
+Everything else in the config is actually modifiable without re-ingestion:
+
+Chunking strategy — locked, because it determined how many chunks exist and where boundaries are
+Embedding model — locked, vectors are model-specific
+Chunk size / overlap — locked, same reason as chunking
+Vector store type — locked, data lives in that store
+BM25 — can be toggled on/off, can be rebuilt from raw chunk text stored in ChromaDB metadata
+Fusion method — just math, change anytime
+Query expansion — just an LLM call, change anytime
+Re-ranker — just a model inference step, change anytime
+Top-K values — change anytime
+LLM — change anytime, it's the last step
+
+So the locked components are exactly the ingestion-time decisions. Everything after the vector store is runtime configuration and can be modified live. This is actually a nice UX distinction — in the Config tab you could show two sections: "Ingestion config (locked)" and "Retrieval config (editable)."
+
+How Multiple RAGs Coexist
+At any given time, only one RAG's pipeline is active in the session. But all RAGs' data sits on disk simultaneously. The ChromaDB instance has multiple collections. The store/ folder has multiple RAG subfolders.
+The key insight is that ChromaDB collections are completely independent. MedRAG's chunks never appear in LegalRAG's search results. BM25 indexes are separate pickle files. Eval sets are separate JSON files. There's no shared mutable state between RAGs at the data layer.
+The only shared thing is the ChromaDB client object itself, which just points at the store/chroma_db/ directory. All the isolation is handled at the collection name level.
+
+The Data Flow End to End, One Final Time
+User creates RAG
+  → writes config.json + entry in rags.json
+  → creates ChromaDB collection with RAG's name
+  → initializes empty BM25 index
+
+User ingests a document
+  → file read → chunked per config → chunks stored
+  → each chunk embedded → vector stored in ChromaDB with metadata
+  → each chunk text added to BM25 index
+  → BM25 index serialized to bm25_index.pkl
+  → chunk count updated in rags.json
+
+User chats
+  → Pipeline.query() runs all 7 steps
+  → answer + sources + internals returned
+  → chat history appended to session state
+  → internals stored in session state for Internals tab
+
+User runs eval
+  → Evaluator runs naive pipeline on all eval queries → scores
+  → Evaluator runs hybrid pipeline on all eval queries → scores
+  → LLM judge scores faithfulness for each answer
+  → Results written to eval_results.json
+  → Eval tab re-renders from new results
+
+User deletes RAG
+  → ChromaDB collection dropped
+  → store/ragname/ folder deleted
+  → entry removed from rags.json
+  → session state cleared if this was the active RAG
+Want me to now start writing the actual code, beginning with the project skeleton and the config/registry layer?will i be storing things in sql like chat messages?5:16 PMGood question. Here's the honest answer:
+
+What Actually Needs Persistent Storage
+Go through every piece of data in the app and ask: does this need to survive an app restart? Does it need to be queried or filtered? Does it grow over time?
+
+Chat History
+This is the main thing you might reach for SQL for. But think about what you actually need from chat history.
+If it's just "show the conversation while I'm in this session" → session state is enough, nothing persists, chat resets when you close the tab. This is how most RAG demos work.
+If you want "I can come back tomorrow and see my previous conversations" → you need persistence. Your options are:
+SQLite — one file, no server, Python has it built in. A messages table with columns: id, rag_id, session_id, role, content, sources, timestamp. Simple SQL queries to load history per RAG. This is the right choice if you want persistence without complexity.
+JSON file — store/medrag/chat_history.json. Append each message as a JSON object. Works fine until the file gets large (10k+ messages) at which point reading and writing the whole file on every message becomes slow.
+No persistence at all — completely valid for a portfolio project. The interesting parts of this project are the retrieval pipeline and the eval system, not the chat history. Nobody evaluating this project will care that chat history doesn't persist.
+My recommendation: start with no persistence. If you want to add it later, SQLite takes about 30 minutes to wire in.
+
+Everything Else
+DataWhat it isWhere it livesWhyRAG configsSmall JSON, rarely changesrags.json + config.jsonNo query needs, just read/writeChunk vectorsDense float arraysChromaDBSpecialized vector store handles this — SQL is terrible at vector similarityChunk text + metadataSource, page, chunk IDChromaDB metadataLives next to the vectors, no reason to splitBM25 indexPython objectPickle fileCan't go in SQL meaningfullyEval set50-100 query/answer pairseval_set.jsonSmall, never queried relationallyEval resultsMetric scoreseval_results.jsonJust read and display, no filtering neededChat historyMessagesSession state (or SQLite if you want persistence)See above
+
+The Real Answer
+You don't need SQL at all for v1. The reason people reach for SQL is when they have relational data — things that reference other things, that need filtering, joining, aggregating. Your data doesn't have that shape.
+Your data is:
+
+A few config files (tiny, read-once on startup)
+Vector embeddings (ChromaDB owns this)
+A BM25 index (pickle owns this)
+A couple of JSON eval files (small, read-once)
+Chat messages (session state is fine for now)
+
+If this were a multi-user SaaS product where 500 users each have their own RAGs and conversation histories that need to be isolated by user ID, queried by date, exported on request — then yes, SQLite or Postgres makes sense. You'd add a users table, a rags table, a messages table, foreign keys between them.
+But for a single-user portfolio tool, adding SQL would be complexity for zero benefit. The rags.json file is your "database" — it has five fields per RAG and you read the whole thing on startup. That's not a database problem, that's a file problem.
+Add SQLite only when you feel the pain of not having it — specifically when you find yourself wanting to query chat history across sessions, or filter eval results by date, or do anything that requires "give me all X where Y." Until that moment, JSON files are the right tool.ok so it will be a docker container when deployed runs a steamlit UI on IP and port and then user can create a new RAG, chat, run eval, ingestion, edit/delete rag. it stores chats maybe in a sqlite instance but when i destory the container and re launch it everything is fresh.just one thing, i will only pay for openrouter LLMs rest all the option in the dropdowns should be free and runs locally on a server. we can grey out the other options but keep it there, user cannot select it.5:22 PM2 / 2Architected local-first RAG system with ephemeral Docker deployment and OpenRouter monetizationArchitected local-first RAG system with ephemeral Docker deployment and OpenRouter monetizationPerfect. This clarifies everything. Let me map out exactly how the deployment works and which options are free vs greyed out.
+
+What Runs Locally (Free, Inside the Container)
+Embedding models — all via sentence-transformers
+These are HuggingFace models that download once and run on CPU. You bake the download into the Docker image at build time so there's no startup delay.
+Option in dropdownModelSizeSpeedall-MiniLM-L6-v2Local80MBVery fastall-MiniLM-L12-v2Local120MBFastall-mpnet-base-v2Local420MBModeratebge-large-en-v1.5Local1.3GBSlow on CPUOpenAI text-embedding-3-smallAPI—Greyed outOpenAI text-embedding-3-largeAPI—Greyed out
+Vector stores
+OptionStatusWhyChromaDBFree, localRuns in-process, no serverFAISSFree, localIn-memory, no persistencePineconeGreyed outCloud API, paidQdrantGreyed outNeeds separate server
+Sparse search
+OptionStatusBM25Free, pure Python, localBM25+Free, pure Python, localSPLADEGreyed out — needs GPU to run meaningfully
+Re-rankers
+OptionStatusDetailsLocal cross-encoder (ms-marco-MiniLM)Free, localDownloads ~85MB model, runs on CPUBGE Reranker LargeFree, local1.3GB, slower on CPUCohere Rerank v3Greyed outPaid APIJina RerankerGreyed outPaid API
+Query expansion
+OptionStatusDetailsNoneFreeNo call madeLLM variantsUses OpenRouterOne extra LLM call per queryHyDEUses OpenRouterOne extra LLM call per queryT5 paraphraseGreyed outNeeds GPU to be fast enough
+Fusion
+All fusion methods (RRF, weighted sum, CombSUM) are pure math. All free, all local.
+LLMs — OpenRouter only
+OptionCostmeta-llama/llama-3-70b~$0.001/querymistralai/mixtral-8x7b~$0.0005/queryanthropic/claude-3-haiku~$0.001/queryopenai/gpt-4o-mini~$0.001/query
+User puts their OpenRouter API key in an env var when running the container. That's the only external dependency.
+
+The Docker Architecture
+Docker container
+│
+├── Streamlit app (port 8501)
+│
+├── /app/                        ← your code
+├── /app/store/                  ← all runtime data (ephemeral)
+│   ├── rags.json
+│   ├── chroma_db/
+│   ├── medrag/
+│   │   ├── config.json
+│   │   ├── bm25_index.pkl
+│   │   ├── eval_set.json
+│   │   └── eval_results.json
+│   └── chat.db                  ← SQLite file
+│
+└── /root/.cache/huggingface/    ← pre-downloaded models (baked in)
+    ├── all-MiniLM-L6-v2/
+    ├── ms-marco-MiniLM-L-6-v2/
+    └── all-mpnet-base-v2/
+The Dockerfile downloads all the local models at build time, not runtime. This makes the image larger (~3-4GB with models baked in) but means the container starts in seconds with no HuggingFace download wait. When you docker run, everything is ready.
+docker build → downloads all models into image → ~3GB image
+docker run -p 8501:8501 -e OPENROUTER_API_KEY=sk-... → starts in ~5 seconds
+
+The Ephemeral Reality
+When the container is destroyed and relaunched:
+
+All RAGs gone — rags.json is fresh
+All ChromaDB collections gone
+All BM25 indexes gone
+All eval sets and results gone
+All chat history gone — SQLite file is fresh
+All ingested documents gone
+
+The only things that survive are the baked-in models and your code.
+This is completely fine for a portfolio project. If you ever wanted persistence across restarts, you'd mount a Docker volume:
+docker run -v /your/server/data:/app/store ...
+That single flag makes everything persistent. But you said fresh on restart, so no volume mount — and that's a perfectly valid deployment choice.
+
+Resource Requirements on the Server
+This matters because you're running embedding models and a cross-encoder locally on CPU.
+Minimum: 4 CPU cores, 8GB RAM
+Comfortable: 8 CPU cores, 16GB RAM
+The bottleneck is the cross-encoder re-ranker at query time. It runs 20 forward passes sequentially on CPU, which takes roughly 1-3 seconds depending on the server. Embedding a query is fast (~100ms). BM25 is instant. The LLM call to OpenRouter is the longest wait (~1-2s) but that's network, not your server.
+During ingestion, embedding 1000 chunks on CPU with MiniLM takes roughly 30-60 seconds. Not fast, but ingestion is a one-time operation per document.
+RAM breakdown:
+
+MiniLM model in memory: ~500MB
+Cross-encoder model in memory: ~400MB
+ChromaDB with 10k chunks: ~500MB
+BM25 index for 10k chunks: ~200MB
+Streamlit + Python overhead: ~500MB
+Total comfortable ceiling: ~3-4GB RAM
+
+So an 8GB server is genuinely comfortable. A 4GB server works but leaves little headroom.
+
+One Thing to Decide Now
+Do the models load at container startup or on first use?
+Option A — Load all models at startup:
+
+Container takes 20-30 seconds to become ready
+Once ready, first query is instant
+All model RAM is consumed whether you use them or not
+
+Option B — Load models lazily on first use:
+
+Container starts instantly
+First query after startup has a 5-10 second delay while model loads into RAM
+Only the models you actually select get loaded
+
+For a portfolio demo where you're showing it to people, Option A is better — you never want a 10-second lag mid-demo. For a server running 24/7 with infrequent use, Option B saves RAM.
+The clean way to implement this is a model cache singleton — a module-level dictionary that maps model names to loaded model objects. First call loads and caches. Every subsequent call returns the cached object instantly. Startup pre-warms this cache for the default models.
+
+Summary of the Deployment in One Picture
+Your server
+└── Docker container (3-4GB image)
+    ├── Streamlit on :8501
+    ├── All ML models pre-downloaded (free, local)
+    ├── ChromaDB (free, local)
+    ├── BM25 (free, local)
+    ├── SQLite for chat (ephemeral)
+    └── OpenRouter API key (env var) ← only external call
+         └── pays per LLM query (~$0.001 each)
+Everything local except the LLM generation step. Clean, simple, one API key, no other cloud dependencies.
+Ready to start building?yes i will instruct claude code to build this entire project in one go. just give me the best way possible to communicate everything to claude about this project. act as a senior developer/ product manager5:24 PMArchitected comprehensive technical specification for seamless project executionArchitected comprehensive technical specification for seamless project executionHere is the complete engineering brief. Copy this entire thing into Claude Code as your first message.
+
+ENGINEERING BRIEF — RAG BUILDER
+================================
+
+You are building a full-stack, self-hosted RAG (Retrieval-Augmented Generation) 
+builder application. Read this entire brief before writing a single line of code. 
+Then build it completely, in the order specified at the end.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 1 — WHAT THIS IS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A Streamlit web application that lets a user create and manage multiple 
+independent RAG pipelines. Each RAG is a named configuration with its own:
+- Component choices (chunking, embeddings, retrieval, reranking, LLM)
+- Document corpus (ingested PDFs, text files, URLs)
+- ChromaDB vector collection
+- BM25 index
+- Eval set and eval results
+- Chat history (SQLite)
+
+The app runs inside a single Docker container. All ML models run locally 
+on CPU inside the container. The only external API is OpenRouter for LLM 
+generation. Everything else is free and local.
+
+When the container is destroyed and relaunched, all data is fresh (ephemeral). 
+No Docker volumes. No external databases.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 2 — EXACT TECH STACK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+UI:
+- streamlit==1.35.0
+
+ML / Retrieval:
+- sentence-transformers==2.7.0
+- chromadb==0.5.0
+- rank_bm25==0.2.2
+- torch==2.3.0 (CPU only, no CUDA)
+
+Document processing:
+- pypdf==4.2.0          ← PDF parsing
+- beautifulsoup4==4.12.3 ← URL scraping
+- requests==2.32.0
+- python-docx==1.1.0
+
+LLM:
+- openai==1.30.0        ← used with OpenRouter base_url, not OpenAI directly
+
+Evaluation:
+- ragas==0.1.9
+- datasets==2.19.0      ← ragas dependency
+
+Data:
+- sqlite3               ← stdlib, no install needed
+- pickle                ← stdlib
+- numpy==1.26.4
+
+Utilities:
+- python-dotenv==1.0.1
+- pydantic==2.7.0       ← for config validation
+- loguru==0.7.2         ← for logging
+
+All in requirements.txt. Pin every version exactly as listed.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 3 — EXACT PROJECT STRUCTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+rag-builder/
+│
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+├── .env.example
+├── README.md
+│
+├── app.py                      ← Streamlit entry point only. No logic here.
+│
+├── core/
+│   ├── __init__.py
+│   ├── config.py               ← RAGConfig pydantic model + validation
+│   ├── registry.py             ← Read/write rags.json, create/delete RAG folders
+│   ├── chunker.py              ← All chunking strategies
+│   ├── embedder.py             ← Model loader with singleton cache
+│   ├── vector_store.py         ← ChromaDB wrapper
+│   ├── sparse.py               ← BM25 wrapper, pickle save/load
+│   ├── retriever.py            ← Dense + sparse retrieval, RRF fusion
+│   ├── reranker.py             ← Cross-encoder wrapper with singleton cache
+│   ├── query_expander.py       ← LLM query expansion and HyDE
+│   ├── generator.py            ← OpenRouter LLM call
+│   ├── pipeline.py             ← Orchestrates all core components
+│   ├── evaluator.py            ← NDCG, MRR, faithfulness scoring
+│   └── database.py             ← SQLite setup and chat history operations
+│
+├── ui/
+│   ├── __init__.py
+│   ├── components/
+│   │   ├── sidebar.py          ← RAG list + navigation
+│   │   └── metrics.py          ← Reusable metric card renderer
+│   ├── home.py                 ← RAG grid dashboard
+│   ├── create.py               ← Creation form
+│   ├── ingest.py               ← Document upload tab
+│   ├── chat.py                 ← Chat interface tab
+│   ├── eval.py                 ← Eval dashboard tab
+│   ├── internals.py            ← Retrieval internals tab
+│   └── config_view.py          ← Config display + edit + delete tab
+│
+└── store/                      ← Created at runtime, not committed to git
+    ├── rags.json
+    ├── chroma_db/
+    └── {rag_id}/
+        ├── config.json
+        ├── bm25_index.pkl
+        ├── eval_set.json
+        ├── eval_results.json
+        └── chat.db
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 4 — DATA MODELS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+RAGConfig (pydantic model in core/config.py):
+  id: str                     ← slugified name, e.g. "medrag"
+  name: str                   ← display name, e.g. "MedRAG"
+  description: str
+  created_at: str             ← ISO timestamp
+  doc_count: int
+  chunk_count: int
+  last_used: str | None
+
+  # Ingestion config — LOCKED after first document ingested
+  chunking_strategy: Literal["recursive", "fixed", "sentence", "semantic"]
+  chunk_size: int             ← 256, 512, 768, 1024
+  chunk_overlap: int          ← 0, 25, 50, 100
+  embedding_model: Literal[
+    "all-MiniLM-L6-v2",
+    "all-MiniLM-L12-v2",
+    "all-mpnet-base-v2",
+    "bge-large-en-v1.5"
+  ]
+  vector_store: Literal["chromadb", "faiss"]  ← faiss greyed out in UI
+
+  # Retrieval config — EDITABLE at any time
+  sparse_search: Literal["none", "bm25", "bm25plus"]
+  fusion_method: Literal["rrf", "weighted", "combsum"]
+  query_expansion: Literal["none", "llm_variants", "hyde"]
+  top_k_retrieval: int        ← 10, 20, 30, 50
+  reranker: Literal[
+    "none",
+    "cross_encoder_ms_marco",
+    "bge_reranker_large"
+  ]
+  top_k_final: int            ← 3, 5, 7, 10
+  llm_model: str              ← OpenRouter model string
+  temperature: float          ← 0.0, 0.3, 0.7, 1.0
+
+  # Derived flags (not in form, computed from above)
+  is_locked: bool             ← True after first doc ingested
+  has_eval_set: bool
+  has_eval_results: bool
+
+
+rags.json shape:
+  List of RAGConfig objects serialized as JSON.
+  This is the master registry. Written atomically (write to temp file, rename).
+
+
+SQLite schema (one chat.db per RAG at store/{rag_id}/chat.db):
+  CREATE TABLE sessions (
+    id TEXT PRIMARY KEY,
+    created_at TEXT
+  );
+  CREATE TABLE messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    role TEXT,           ← "user" or "assistant"
+    content TEXT,
+    sources TEXT,        ← JSON array of source dicts
+    timestamp TEXT,
+    FOREIGN KEY (session_id) REFERENCES sessions(id)
+  );
+
+
+Chunk metadata stored in ChromaDB (each chunk has this as metadata dict):
+  {
+    chunk_id: str,        ← "{rag_id}_chunk_{index}"
+    source_doc: str,      ← filename or URL
+    page_number: int | None,
+    chunk_index: int,
+    char_count: int
+  }
+
+
+Eval set (store/{rag_id}/eval_set.json):
+  [
+    {
+      query: str,
+      ideal_answer: str,
+      relevant_chunk_ids: List[str],
+      source_doc: str
+    }
+  ]
+
+
+Eval results (store/{rag_id}/eval_results.json):
+  {
+    run_at: str,
+    naive: {
+      ndcg_at_5: float,
+      mrr: float,
+      faithfulness: float,
+      avg_latency_seconds: float
+    },
+    hybrid: {
+      ndcg_at_5: float,
+      mrr: float,
+      faithfulness: float,
+      avg_latency_seconds: float
+    },
+    per_query: [
+      {
+        query: str,
+        naive_first_relevant_rank: int | None,
+        hybrid_first_relevant_rank: int | None,
+        naive_ndcg: float,
+        hybrid_ndcg: float,
+        faithful: bool
+      }
+    ]
+  }
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 5 — CORE COMPONENTS IN DETAIL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+--- core/registry.py ---
+
+Functions:
+  load_all_rags() → List[RAGConfig]
+    Read store/rags.json. Return empty list if file doesn't exist.
+
+  save_all_rags(rags: List[RAGConfig]) → None
+    Write atomically to store/rags.json.
+
+  create_rag(config: RAGConfig) → RAGConfig
+    - Validate name is unique
+    - Create store/{rag_id}/ directory
+    - Initialize empty eval_set.json as []
+    - Initialize SQLite DB with schema
+    - Append to rags.json
+    - Return saved config
+
+  delete_rag(rag_id: str) → None
+    - Drop ChromaDB collection named rag_id
+    - Delete store/{rag_id}/ directory recursively
+    - Remove from rags.json
+
+  update_rag(rag_id: str, updates: dict) → RAGConfig
+    - Load rags.json, find by id, apply updates, save.
+
+  get_rag(rag_id: str) → RAGConfig | None
+
+
+--- core/embedder.py ---
+
+Singleton cache pattern. Module-level dict: _model_cache = {}
+
+  get_embedder(model_name: str) → SentenceTransformer
+    If model_name not in _model_cache:
+      load SentenceTransformer(model_name)
+      store in _model_cache
+    Return _model_cache[model_name]
+
+  embed_texts(texts: List[str], model_name: str) → List[List[float]]
+    embedder = get_embedder(model_name)
+    return embedder.encode(texts, show_progress_bar=False).tolist()
+
+  embed_query(query: str, model_name: str) → List[float]
+    return embed_texts([query], model_name)[0]
+
+Models to pre-warm at startup (called from app.py):
+  preload_default_models() → loads all-MiniLM-L6-v2 and cross-encoder
+
+
+--- core/chunker.py ---
+
+  chunk_document(text: str, strategy: str, chunk_size: int, overlap: int) 
+    → List[str]
+
+  Implement all four strategies:
+
+  "fixed": Split by character count with overlap. 
+    Use langchain_text_splitters.CharacterTextSplitter if available,
+    else implement manually.
+
+  "recursive": Split preferring \n\n, then \n, then ". ", then " ".
+    Stop when chunk is under chunk_size tokens.
+    Implement without langchain dependency — write the recursive logic manually.
+
+  "sentence": Use basic sentence splitting on ". ", "! ", "? ".
+    Group sentences until token count approaches chunk_size.
+    Token count approximation: len(text.split()) * 1.3
+
+  "semantic": Embed every sentence. Find split points where cosine 
+    similarity between adjacent sentence embeddings drops below 0.5.
+    Group resulting segments to stay under chunk_size.
+    This is expensive — only offered for small documents.
+
+  All strategies must return List[str] with no empty strings.
+
+
+--- core/sparse.py ---
+
+  build_bm25_index(chunks: List[str], chunk_ids: List[str]) → BM25Okapi
+    Tokenize each chunk (lowercase, split on whitespace).
+    Build BM25Okapi index.
+
+  save_bm25_index(rag_id: str, index: BM25Okapi, chunk_ids: List[str]) → None
+    Pickle both index and chunk_ids together as a tuple.
+    Save to store/{rag_id}/bm25_index.pkl
+
+  load_bm25_index(rag_id: str) → Tuple[BM25Okapi, List[str]] | None
+    Unpickle. Return None if file doesn't exist.
+
+  search_bm25(query: str, index: BM25Okapi, chunk_ids: List[str], top_k: int)
+    → List[Tuple[str, float]]
+    Returns list of (chunk_id, score) sorted descending.
+
+
+--- core/vector_store.py ---
+
+  get_chroma_client() → chromadb.Client
+    Singleton. Points to store/chroma_db/
+
+  get_or_create_collection(rag_id: str, embedding_model: str) 
+    → chromadb.Collection
+
+  add_chunks(
+    collection: chromadb.Collection,
+    chunk_ids: List[str],
+    texts: List[str],
+    embeddings: List[List[float]],
+    metadatas: List[dict]
+  ) → None
+
+  search_dense(
+    collection: chromadb.Collection,
+    query_embedding: List[float],
+    top_k: int
+  ) → List[Tuple[str, float, dict]]
+    Returns list of (chunk_id, cosine_score, metadata)
+
+  get_chunks_by_ids(collection, chunk_ids: List[str]) → List[dict]
+    Returns chunk text + metadata for display in Internals tab.
+
+  delete_collection(rag_id: str) → None
+
+
+--- core/retriever.py ---
+
+  reciprocal_rank_fusion(
+    ranked_lists: List[List[Tuple[str, float]]],
+    k: int = 60
+  ) → List[Tuple[str, float]]
+    Each inner list is (chunk_id, score) sorted descending.
+    Returns merged list sorted by RRF score descending.
+
+  hybrid_retrieve(
+    queries: List[str],           ← original + expanded variants
+    collection,
+    bm25_index,
+    bm25_chunk_ids: List[str],
+    config: RAGConfig,
+    top_k: int
+  ) → List[Tuple[str, float]]
+    For each query:
+      - embed query → dense search → ranked list
+      - bm25 search → ranked list
+    Collect all lists → RRF fusion → return top_k chunk_ids with scores
+
+  naive_retrieve(
+    query: str,
+    collection,
+    embedding_model: str,
+    top_k: int
+  ) → List[Tuple[str, float]]
+    Just dense search, no expansion, no BM25, no fusion.
+    Used as baseline in eval.
+
+
+--- core/reranker.py ---
+
+Singleton cache for cross-encoder models.
+
+  get_reranker(model_name: str) → CrossEncoder
+    "cross_encoder_ms_marco" → "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    "bge_reranker_large" → "BAAI/bge-reranker-large"
+    Cached after first load.
+
+  rerank(
+    query: str,
+    chunk_ids: List[str],
+    chunk_texts: List[str],
+    model_name: str
+  ) → List[Tuple[str, float]]
+    Run cross-encoder on all (query, chunk_text) pairs.
+    Return (chunk_id, score) sorted descending.
+
+
+--- core/query_expander.py ---
+
+  expand_query(query: str, method: str, llm_model: str, api_key: str)
+    → List[str]
+
+  "none": return [query]
+
+  "llm_variants":
+    Prompt: "Generate 3 alternative phrasings of this question that preserve
+    the original meaning but use different vocabulary. Return a JSON array of
+    3 strings, nothing else."
+    Parse response. Return [original] + 3 variants = 4 total.
+    On any parse failure, return [query].
+
+  "hyde":
+    Prompt: "Write a short paragraph (3-5 sentences) that would be a perfect
+    answer to this question. Be specific and factual."
+    Return [query, hypothetical_answer].
+    The hypothetical answer gets embedded and used for dense retrieval.
+
+
+--- core/generator.py ---
+
+  generate(
+    query: str,
+    context_chunks: List[dict],   ← each has text, source_doc, page_number
+    llm_model: str,
+    temperature: float,
+    api_key: str
+  ) → Tuple[str, List[dict]]
+    Returns (answer_text, sources_used)
+
+  Build prompt:
+    System: "You are a precise question-answering assistant. Answer using 
+    only the provided context. For each claim, cite the source as [1], [2] 
+    etc. If the context does not contain the answer, say so explicitly."
+    
+    User: "Context:\n[1] {source}: {text}\n[2] {source}: {text}\n...\n
+    Question: {query}"
+
+  Call OpenRouter:
+    base_url = "https://openrouter.ai/api/v1"
+    Use openai SDK with this base_url.
+    model = llm_model
+    temperature = temperature
+
+  Parse response. Extract source indices mentioned in answer.
+  Return answer text + list of source dicts that were actually cited.
+
+
+--- core/pipeline.py ---
+
+class Pipeline:
+  __init__(self, config: RAGConfig, api_key: str)
+    self.config = config
+    self.collection = get_or_create_collection(config.id, config.embedding_model)
+    self.bm25_index, self.bm25_chunk_ids = load_bm25_index(config.id) or (None, [])
+
+  ingest_text(self, text: str, source_name: str, page_number: int | None) → int
+    Returns number of chunks created.
+    - chunk text using config chunking settings
+    - generate chunk_ids: f"{self.config.id}_chunk_{global_counter}"
+    - embed all chunks in batches of 64
+    - add to ChromaDB
+    - rebuild BM25 index from scratch (get all texts from ChromaDB, add new ones)
+    - save BM25 index
+    - update config doc_count and chunk_count in registry
+
+  query(self, user_query: str) → dict
+    Returns full internals dict:
+    {
+      answer: str,
+      sources: List[dict],
+      query_variants: List[str],
+      pre_rerank_results: List[{chunk_id, text, source, rrf_score, dense_score, bm25_rank}],
+      post_rerank_results: List[{chunk_id, text, source, cross_encoder_score, rank_before, rank_after}],
+      latency_breakdown: {expansion_ms, retrieval_ms, rerank_ms, generation_ms}
+    }
+
+    Step by step:
+    1. t0 = time. Expand query per config. t1 = time. expansion_ms = t1-t0
+    2. t0. Hybrid retrieve top_k_retrieval chunks. Get chunk texts from ChromaDB. t1. retrieval_ms.
+    3. If reranker != "none": t0. Rerank. t1. rerank_ms.
+    4. Take top_k_final chunks.
+    5. t0. Generate answer. t1. generation_ms.
+    6. Assemble and return full internals dict.
+
+  rebuild_bm25(self) → None
+    Fetch all chunks from ChromaDB. Rebuild index. Save pickle.
+
+  get_all_chunk_texts(self) → List[Tuple[str, str]]
+    Returns list of (chunk_id, text) for all chunks in this RAG's collection.
+
+
+--- core/evaluator.py ---
+
+  generate_eval_set_from_corpus(
+    pipeline: Pipeline,
+    n_questions: int,
+    api_key: str,
+    llm_model: str
+  ) → List[dict]
+    - Sample n_questions random chunks from ChromaDB
+    - For each chunk, prompt LLM: "Generate one question this passage answers.
+      Return JSON: {question: str, answer: str}"
+    - Return eval set format with relevant_chunk_ids populated.
+
+  run_evaluation(
+    pipeline: Pipeline,
+    eval_set: List[dict],
+    api_key: str
+  ) → dict
+    For each query in eval_set:
+      - Run naive_retrieve → get ranked chunk_ids → compute NDCG@5, MRR
+      - Run pipeline.query() → get ranked results → compute NDCG@5, MRR
+      - Score faithfulness via RAGAS (or simple LLM judge if RAGAS fails)
+      - Record latency for both
+    Aggregate. Return eval_results dict.
+    Save to store/{rag_id}/eval_results.json.
+
+  compute_ndcg_at_5(
+    retrieved_ids: List[str],
+    relevant_ids: List[str]
+  ) → float
+
+  compute_mrr(
+    retrieved_ids: List[str],
+    relevant_ids: List[str]
+  ) → float
+
+  Note on RAGAS: RAGAS may require specific setup. If import fails, 
+  fall back to a simple LLM judge prompt that scores faithfulness 0-1:
+  "Given this answer and these source passages, what fraction of claims 
+  in the answer are supported by the passages? Return only a float 0-1."
+
+
+--- core/database.py ---
+
+  get_db_path(rag_id: str) → str
+    Returns store/{rag_id}/chat.db
+
+  init_db(rag_id: str) → None
+    Create tables if not exist.
+
+  save_message(rag_id, session_id, role, content, sources) → None
+
+  load_session_messages(rag_id, session_id) → List[dict]
+
+  create_session(rag_id) → str
+    Returns new session_id (uuid4).
+
+  list_sessions(rag_id) → List[dict]
+    Returns [{id, created_at, message_count}] newest first.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 6 — UI IN DETAIL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+--- app.py ---
+
+Must do these things in order:
+1. st.set_page_config(layout="wide", page_title="RAG Builder")
+2. Call preload_default_models() — loads MiniLM and cross-encoder into cache.
+   Wrap in st.spinner("Loading models...") only on first run.
+3. Initialize st.session_state keys if not present:
+   - active_rag_id: None
+   - active_pipeline: None
+   - active_tab: "home"
+   - chat_session_id: None
+4. Render sidebar (ui/components/sidebar.py)
+5. Route to correct view based on st.session_state.active_tab
+
+
+--- ui/components/sidebar.py ---
+
+render_sidebar():
+  st.sidebar.title("RAG Builder")
+  st.sidebar.divider()
+  
+  If st.sidebar.button("+ New RAG"):
+    st.session_state.active_tab = "create"
+    st.session_state.active_rag_id = None
+    st.rerun()
+  
+  st.sidebar.subheader("My RAGs")
+  
+  For each rag in load_all_rags():
+    Show name + one-line summary of retrieval mode + chunk count.
+    If st.sidebar.button(rag.name, key=f"rag_{rag.id}"):
+      st.session_state.active_rag_id = rag.id
+      st.session_state.active_tab = "workspace"
+      Load pipeline if not already loaded for this rag_id.
+      st.rerun()
+  
+  If no RAGs exist, show: "No RAGs yet. Create your first one."
+
+
+--- ui/home.py ---
+
+Shown when active_tab == "home".
+
+render_home():
+  Display RAG cards in a 2-column grid using st.columns(2).
+  Each card (use st.container with border=True):
+    - Name (large)
+    - Description
+    - Badges: retrieval mode, reranker, query expansion
+    - Stats: doc_count, chunk_count
+    - Last used timestamp
+    - Button: "Open" → navigates to workspace
+  
+  Last card is always "Create new RAG →" button.
+
+
+--- ui/create.py ---
+
+Shown when active_tab == "create".
+
+render_create_form():
+  st.title("Create New RAG")
+  st.caption("Configure your retrieval pipeline")
+  
+  Use st.form("create_rag_form") so nothing fires until submit.
+  
+  name = st.text_input("Name")
+  description = st.text_input("Description")
+  
+  st.subheader("Chunking")
+  col1, col2 = st.columns(2)
+  chunking_strategy = col1.selectbox("Strategy", 
+    ["recursive", "fixed", "sentence", "semantic"])
+  chunk_size = col2.selectbox("Chunk size (tokens)", [256, 512, 768, 1024], index=1)
+  chunk_overlap = st.selectbox("Overlap (tokens)", [0, 25, 50, 100], index=2)
+  
+  st.subheader("Embeddings")
+  col1, col2 = st.columns(2)
+  embedding_model = col1.selectbox("Embedding model", [
+    "all-MiniLM-L6-v2",
+    "all-MiniLM-L12-v2", 
+    "all-mpnet-base-v2",
+    "bge-large-en-v1.5"
+  ])
+  vector_store = col2.selectbox("Vector store",
+    ["chromadb", "FAISS (coming soon)"],
+    disabled_options=["FAISS (coming soon)"])
+  
+  Note: For greyed-out options, use st.selectbox with the options listed
+  but add "(API - disabled)" to the label. Then validate on submit and 
+  reject if a disabled option was somehow selected.
+  
+  st.subheader("Retrieval")
+  col1, col2 = st.columns(2)
+  sparse_search = col1.selectbox("Sparse search",
+    ["none", "bm25", "bm25plus", "SPLADE (GPU required - disabled)"])
+  fusion_method = col2.selectbox("Fusion method",
+    ["rrf", "weighted", "combsum"])
+  
+  col1, col2 = st.columns(2)
+  query_expansion = col1.selectbox("Query expansion",
+    ["none", "llm_variants", "hyde"])
+  top_k_retrieval = col2.selectbox("Top-K (pre-rerank)", [10, 20, 30, 50], index=1)
+  
+  st.subheader("Re-ranking")
+  col1, col2 = st.columns(2)
+  reranker = col1.selectbox("Re-ranker", [
+    "none",
+    "cross_encoder_ms_marco",
+    "bge_reranker_large",
+    "Cohere Rerank v3 (API - disabled)",
+    "Jina Reranker (API - disabled)"
+  ])
+  top_k_final = col2.selectbox("Final Top-K", [3, 5, 7, 10], index=1)
+  
+  st.subheader("Generation")
+  col1, col2 = st.columns(2)
+  llm_model = col1.selectbox("LLM (OpenRouter)", [
+    "meta-llama/llama-3-70b-instruct",
+    "mistralai/mixtral-8x7b-instruct",
+    "anthropic/claude-3-haiku",
+    "openai/gpt-4o-mini",
+    "google/gemma-2-9b-it"
+  ])
+  temperature = col2.selectbox("Temperature", [0.0, 0.3, 0.7, 1.0])
+  
+  submitted = st.form_submit_button("Create RAG")
+  if submitted:
+    - Validate: name not empty, name not duplicate, no disabled options selected
+    - Create RAGConfig, call create_rag()
+    - st.session_state.active_rag_id = new_id
+    - st.session_state.active_tab = "workspace"
+    - st.success(f"RAG '{name}' created. Start by ingesting documents.")
+    - st.rerun()
+
+
+--- ui/ingest.py ---
+
+render_ingest(pipeline: Pipeline, config: RAGConfig):
+  
+  st.subheader("Add Documents")
+  
+  Tab1, Tab2, Tab3 = st.tabs(["Upload File", "Paste URL", "Paste Text"])
+  
+  with Tab1:
+    uploaded = st.file_uploader("Upload PDF, TXT, or DOCX", 
+      type=["pdf", "txt", "docx"])
+    if uploaded and st.button("Ingest File"):
+      with st.spinner("Chunking and embedding..."):
+        text = extract_text_from_file(uploaded)
+        n_chunks = pipeline.ingest_text(text, uploaded.name, None)
+      st.success(f"Ingested {n_chunks} chunks from {uploaded.name}")
+      st.rerun()
+  
+  with Tab2:
+    url = st.text_input("URL")
+    if url and st.button("Scrape and Ingest"):
+      with st.spinner("Fetching and embedding..."):
+        text = scrape_url(url)
+        n_chunks = pipeline.ingest_text(text, url, None)
+      st.success(f"Ingested {n_chunks} chunks from {url}")
+      st.rerun()
+  
+  with Tab3:
+    pasted = st.text_area("Paste plain text", height=200)
+    doc_name = st.text_input("Document name")
+    if st.button("Ingest Text"):
+      n_chunks = pipeline.ingest_text(pasted, doc_name or "pasted_text", None)
+      st.success(f"Ingested {n_chunks} chunks")
+      st.rerun()
+  
+  st.divider()
+  st.subheader("Ingested Documents")
+  
+  Fetch all chunk metadata from ChromaDB.
+  Group by source_doc.
+  For each document show: name, chunk count, ingest time.
+  Use st.dataframe for the table.
+  
+  st.caption(f"Total: {config.chunk_count} chunks across {config.doc_count} documents")
+
+  Helper functions in this file:
+  extract_text_from_file(uploaded_file) → str
+    PDF: use pypdf PdfReader
+    TXT: decode bytes
+    DOCX: use python-docx
+  
+  scrape_url(url: str) → str
+    requests.get(url, timeout=10)
+    BeautifulSoup(response.text, "html.parser")
+    Extract text from p, h1-h6, li tags.
+    Return joined text.
+
+
+--- ui/chat.py ---
+
+render_chat(pipeline: Pipeline, config: RAGConfig, api_key: str):
+  
+  If config.chunk_count == 0:
+    st.warning("Ingest documents first before chatting.")
+    return
+  
+  If no active chat_session_id:
+    Create new session. Store in st.session_state.chat_session_id.
+  
+  Load messages for current session from SQLite.
+  
+  Display messages in order:
+    For user messages: st.chat_message("user")
+    For assistant messages: st.chat_message("assistant")
+      Show answer text.
+      Show source chips below answer: small colored labels showing source_doc + page.
+  
+  user_input = st.chat_input("Ask a question about your documents...")
+  
+  If user_input:
+    Save user message to DB.
+    Display immediately with st.chat_message("user").
+    
+    with st.chat_message("assistant"):
+      with st.spinner("Retrieving and generating..."):
+        result = pipeline.query(user_input)
+      
+      st.markdown(result["answer"])
+      
+      if result["sources"]:
+        st.caption("Sources:")
+        cols = st.columns(len(result["sources"]))
+        for i, source in enumerate(result["sources"]):
+          cols[i].markdown(
+            f'<span style="background:#e8f4fd;padding:2px 8px;
+            border-radius:4px;font-size:12px">{source["source_doc"]}</span>',
+            unsafe_allow_html=True
+          )
+      
+      Store last_internals in st.session_state for Internals tab.
+    
+    Save assistant message + sources to DB.
+  
+  Sidebar within chat: show session list, allow switching sessions.
+
+
+--- ui/eval.py ---
+
+render_eval(pipeline: Pipeline, config: RAGConfig, api_key: str):
+  
+  If config.chunk_count == 0:
+    st.warning("Ingest documents before running eval.")
+    return
+  
+  col1, col2 = st.columns([2, 1])
+  
+  with col2:
+    st.subheader("Eval Set")
+    if config.has_eval_set:
+      eval_set = load eval_set.json
+      st.success(f"{len(eval_set)} queries loaded")
+      if st.button("View / Edit Eval Set"):
+        show eval set in st.data_editor
+    
+    st.divider()
+    st.subheader("Generate Eval Set")
+    n = st.slider("Number of questions", 10, 100, 20, step=10)
+    if st.button("Auto-generate from corpus"):
+      with st.spinner(f"Generating {n} questions..."):
+        eval_set = generate_eval_set_from_corpus(pipeline, n, api_key, config.llm_model)
+        save to eval_set.json
+        update config.has_eval_set = True
+      st.success("Eval set generated.")
+      st.rerun()
+    
+    uploaded_eval = st.file_uploader("Or upload CSV", type=["csv"])
+    st.caption("CSV columns: query, ideal_answer, relevant_chunk_ids, source_doc")
+    if uploaded_eval:
+      parse CSV → save as eval_set.json
+      st.rerun()
+  
+  with col1:
+    st.subheader("Results")
+    
+    if config.has_eval_results:
+      results = load eval_results.json
+      
+      Show 4 metric cards in a row using st.columns(4):
+        NDCG@5: hybrid score + delta vs naive (green if positive)
+        MRR: same
+        Faithfulness: same
+        Avg latency: hybrid latency + delta (amber if slower)
+      
+      st.divider()
+      
+      Show per-query comparison table using st.dataframe:
+        Columns: Query | Naive rank | Hybrid rank | NDCG naive | NDCG hybrid | Faithful
+        Color hybrid rank green if better than naive rank.
+    else:
+      st.info("No eval results yet. Run evaluation below.")
+    
+    st.divider()
+    if config.has_eval_set:
+      if st.button("Run Full Evaluation", type="primary"):
+        progress = st.progress(0, "Starting evaluation...")
+        with st.spinner("Running evaluation (this may take several minutes)..."):
+          results = run_evaluation(pipeline, eval_set, api_key)
+          save to eval_results.json
+          update config.has_eval_results = True
+        st.success("Evaluation complete.")
+        st.rerun()
+
+
+--- ui/internals.py ---
+
+render_internals(config: RAGConfig):
+  
+  internals = st.session_state.get("last_internals")
+  
+  If not internals:
+    st.info("Send a message in the Chat tab to see retrieval internals here.")
+    return
+  
+  st.subheader("Last query internals")
+  st.code(internals["query_variants"], language=None)
+  
+  col1, col2 = st.columns(2)
+  
+  with col1:
+    st.caption("Before re-ranking (RRF top results)")
+    for i, chunk in enumerate(internals["pre_rerank_results"]):
+      with st.expander(f"#{i+1} — {chunk['source']} (RRF: {chunk['rrf_score']:.4f})"):
+        st.markdown(chunk["text"][:500] + "..." if len(chunk["text"]) > 500 else chunk["text"])
+        st.caption(f"Dense score: {chunk['dense_score']:.3f} | BM25 rank: {chunk['bm25_rank']}")
+  
+  with col2:
+    st.caption("After re-ranking")
+    for i, chunk in enumerate(internals["post_rerank_results"]):
+      delta = chunk["rank_before"] - (i + 1)
+      delta_str = f"↑{delta}" if delta > 0 else f"↓{abs(delta)}" if delta < 0 else "="
+      with st.expander(f"#{i+1} — {chunk['source']} ({delta_str}) score: {chunk['cross_encoder_score']:.3f}"):
+        st.markdown(chunk["text"][:500] + "..." if len(chunk["text"]) > 500 else chunk["text"])
+  
+  st.divider()
+  st.subheader("Latency breakdown")
+  cols = st.columns(4)
+  cols[0].metric("Query expansion", f"{internals['latency_breakdown']['expansion_ms']}ms")
+  cols[1].metric("Retrieval", f"{internals['latency_breakdown']['retrieval_ms']}ms")
+  cols[2].metric("Re-ranking", f"{internals['latency_breakdown']['rerank_ms']}ms")
+  cols[3].metric("Generation", f"{internals['latency_breakdown']['generation_ms']}ms")
+
+
+--- ui/config_view.py ---
+
+render_config(config: RAGConfig, pipeline: Pipeline):
+  
+  st.subheader(config.name)
+  st.caption(config.description)
+  
+  col1, col2 = st.columns([1, 1])
+  
+  with col1:
+    st.subheader("Ingestion config")
+    st.caption("Locked after first document is ingested")
+    rows = [
+      ("Chunking strategy", config.chunking_strategy),
+      ("Chunk size", f"{config.chunk_size} tokens"),
+      ("Overlap", f"{config.chunk_overlap} tokens"),
+      ("Embedding model", config.embedding_model),
+      ("Vector store", config.vector_store),
+    ]
+    for label, val in rows:
+      c1, c2 = st.columns(2)
+      c1.markdown(f"**{label}**")
+      if config.is_locked:
+        c2.markdown(f"`{val}` 🔒")
+      else:
+        c2.markdown(f"`{val}`")
+  
+  with col2:
+    st.subheader("Retrieval config")
+    st.caption("Editable at any time")
+    
+    If st.button("Edit retrieval config"):
+      Show editable form for: sparse_search, fusion_method, query_expansion,
+      top_k_retrieval, reranker, top_k_final, llm_model, temperature.
+      On save: call update_rag(). st.rerun().
+  
+  st.divider()
+  
+  st.subheader("Stats")
+  cols = st.columns(3)
+  cols[0].metric("Documents", config.doc_count)
+  cols[1].metric("Chunks", config.chunk_count)
+  cols[2].metric("Created", config.created_at[:10])
+  
+  st.divider()
+  
+  st.subheader("Danger zone")
+  st.warning("Deleting this RAG removes all documents, vectors, and chat history permanently.")
+  confirm = st.text_input('Type the RAG name to confirm deletion')
+  if st.button("Delete RAG", type="primary", disabled=(confirm != config.name)):
+    delete_rag(config.id)
+    st.session_state.active_rag_id = None
+    st.session_state.active_pipeline = None
+    st.session_state.active_tab = "home"
+    st.rerun()
+
+
+--- Workspace routing in app.py ---
+
+When active_tab == "workspace":
+  Load config for active_rag_id.
+  
+  If active_pipeline is None or active_pipeline.config.id != active_rag_id:
+    With st.spinner("Loading pipeline..."):
+      st.session_state.active_pipeline = Pipeline(config, api_key)
+  
+  Show tab bar: Ingest | Chat | Eval | Internals | Config
+  Store selected tab in st.session_state.workspace_tab
+  
+  Route to correct ui/ render function.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 7 — CONFIGURATION AND ENVIRONMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+.env.example:
+  OPENROUTER_API_KEY=sk-or-...
+  STORE_PATH=./store
+
+In app.py, load with python-dotenv.
+If OPENROUTER_API_KEY is missing, show st.error and st.stop().
+
+The API key is read once at startup and passed down to pipeline and evaluator.
+Never hardcode it. Never put it in any config.json.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 8 — DOCKERFILE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system deps
+RUN apt-get update && apt-get install -y \
+  build-essential \
+  curl \
+  && rm -rf /var/lib/apt/lists/*
+
+# Install Python deps
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download all local models at build time (not runtime)
+# This makes the image larger but startup instant
+RUN python -c "
+from sentence_transformers import SentenceTransformer
+from sentence_transformers.cross_encoder import CrossEncoder
+SentenceTransformer('all-MiniLM-L6-v2')
+SentenceTransformer('all-MiniLM-L12-v2')
+SentenceTransformer('all-mpnet-base-v2')
+CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+print('All models downloaded.')
+"
+
+COPY . .
+
+RUN mkdir -p store
+
+EXPOSE 8501
+
+CMD ["streamlit", "run", "app.py", \
+  "--server.port=8501", \
+  "--server.address=0.0.0.0", \
+  "--server.headless=true", \
+  "--browser.gatherUsageStats=false"]
+
+
+docker-compose.yml:
+  version: "3.8"
+  services:
+    rag-builder:
+      build: .
+      ports:
+        - "8501:8501"
+      env_file:
+        - .env
+      restart: unless-stopped
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 9 — ERROR HANDLING RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Every function that calls an external service (OpenRouter) must:
+- Wrap in try/except
+- On failure: return a graceful error dict, never raise to Streamlit
+- Log the error with loguru
+
+Every file read must handle FileNotFoundError.
+Every pickle load must handle UnpicklingError — if corrupt, delete and rebuild.
+
+ChromaDB errors: if collection operation fails, log and surface as 
+st.error() message, do not crash the app.
+
+BM25 search with no index: return empty list, log warning.
+
+Query expansion failure: fall back to [original_query] silently, log warning.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 10 — BUILD ORDER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Build in this exact order. Each phase must work before starting the next.
+
+PHASE 1 — Skeleton and config layer
+  - requirements.txt
+  - Dockerfile + docker-compose.yml
+  - core/config.py (RAGConfig pydantic model)
+  - core/registry.py (rags.json read/write, create/delete)
+  - core/database.py (SQLite schema + operations)
+  - store/ directory creation logic
+  - Verify: python -c "from core.registry import create_rag" works
+
+PHASE 2 — ML components
+  - core/embedder.py (singleton loader)
+  - core/chunker.py (all 4 strategies)
+  - core/vector_store.py (ChromaDB wrapper)
+  - core/sparse.py (BM25 + pickle)
+  - core/reranker.py (cross-encoder singleton)
+  - Verify: each component independently with a test script
+
+PHASE 3 — Retrieval and generation
+  - core/retriever.py (dense + sparse + RRF)
+  - core/query_expander.py
+  - core/generator.py (OpenRouter call)
+  - core/pipeline.py (full orchestration)
+  - Verify: pipeline.ingest_text() and pipeline.query() work end to end
+
+PHASE 4 — Evaluator
+  - core/evaluator.py (metrics + RAGAS integration)
+  - Verify: run_evaluation() returns correct dict structure
+
+PHASE 5 — UI shell
+  - app.py (routing only, session state init)
+  - ui/components/sidebar.py
+  - ui/home.py
+  - ui/create.py
+  - Verify: can create a RAG, see it in sidebar, delete it
+
+PHASE 6 — Workspace tabs
+  - ui/ingest.py
+  - ui/chat.py
+  - ui/internals.py
+  - ui/eval.py
+  - ui/config_view.py
+  - Verify: full user flow works end to end
+
+PHASE 7 — Polish
+  - .env.example and README.md with setup instructions
+  - Verify Dockerfile builds cleanly and container runs
+  - Test: create RAG → ingest PDF → chat → check internals → run eval
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 11 — ABSOLUTE RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. No logic in app.py. It is a router only.
+2. No Streamlit imports in core/. Core is pure Python.
+3. All file paths constructed using os.path.join, never string concat.
+4. All JSON writes are atomic: write to .tmp file, then os.rename().
+5. No global mutable state except the singleton model caches in 
+   embedder.py and reranker.py, which are intentional.
+6. Every public function has a docstring with args and return type.
+7. No placeholder code. Every function must be fully implemented.
+8. The store/ directory must be created at startup if it doesn't exist.
+9. bge-large-en-v1.5 is NOT pre-downloaded in Dockerfile 
+   (too large at 1.3GB). It is downloaded on first use if selected.
+10. All disabled UI options must have "(disabled)" in their label 
+    and must be validated server-side on form submit.
+
+That's the full brief. A few things to note before you hand it to Claude Code:
+First, paste it exactly as-is. Don't summarize it. Claude Code performs best with complete unambiguous specs — every time it has to guess something it introduces inconsistency.
+Second, if Claude Code gets stuck or starts hallucinating a component, interrupt it and say: "Stop. Re-read Section X of the brief and implement only that section now." Scoping it to one phase at a time recovers it fast.
+Third, after Phase 3 is done, test the pipeline manually before letting it continue. That's the core of the whole system — if retrieval or generation is broken, everything built on top of it will be wrong.

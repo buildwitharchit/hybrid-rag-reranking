@@ -1,0 +1,37 @@
+version: "3.8"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RAG Builder — docker-compose.yml
+#
+# Ephemeral deployment: all data (RAGs, chunks, chat history) is destroyed
+# when the container is removed. Mount a volume if you want persistence:
+#
+#   volumes:
+#     - ./data:/app/store
+#
+# Usage:
+#   docker compose up --build       # first run (builds image, downloads models)
+#   docker compose up               # subsequent runs (uses cached image)
+#   docker compose down             # stop and remove container
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  rag-builder:
+    build: .
+    image: rag-builder:latest
+    container_name: rag-builder
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      # STORE_PATH controls where all runtime data is written inside the container.
+      # Change to a volume mount path if you want persistence across restarts.
+      - STORE_PATH=/app/store
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

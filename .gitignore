@@ -1,0 +1,23 @@
+# Environment
+.env
+
+# Runtime data (ephemeral — not committed)
+store/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# HuggingFace model cache (large, auto-downloaded)
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db

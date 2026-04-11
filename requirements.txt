@@ -1,0 +1,27 @@
+# ── UI ────────────────────────────────────────────────────────────────────────
+streamlit==1.35.0
+
+# ── ML / Retrieval ────────────────────────────────────────────────────────────
+sentence-transformers==2.7.0
+chromadb==0.5.0
+rank_bm25==0.2.2
+torch==2.3.0          # CPU-only; no CUDA needed
+
+# ── Document processing ───────────────────────────────────────────────────────
+pypdf==4.2.0           # PDF parsing
+beautifulsoup4==4.12.3 # URL scraping
+requests==2.32.0
+python-docx==1.1.0
+
+# ── LLM ───────────────────────────────────────────────────────────────────────
+openai==1.30.0         # used with OpenRouter base_url
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
+ragas==0.1.9
+datasets==2.19.0       # ragas dependency
+
+# ── Data / utilities ──────────────────────────────────────────────────────────
+numpy==1.26.4
+python-dotenv==1.0.1
+pydantic==2.7.0
+loguru==0.7.2
