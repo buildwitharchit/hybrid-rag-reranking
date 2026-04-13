@@ -27,12 +27,11 @@ def render_internals(config: RAGConfig) -> None:
 
     if not internals:
         st.info(
-            "💡 Send a message in the **Chat** tab to see retrieval internals here.",
-            icon="🔬",
+            "Send a message in the **Chat** tab to see retrieval internals here.",
         )
         return
 
-    st.subheader("🔬 Retrieval Internals")
+    st.subheader("Retrieval Internals")
     st.caption("Showing internals for the last query in the Chat tab.")
 
     # ── Query variants ────────────────────────────────────────────────────────

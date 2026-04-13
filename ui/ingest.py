@@ -27,7 +27,7 @@ from core.vector_store import get_all_chunks
 def render_ingest(pipeline: Pipeline, config: RAGConfig) -> None:
     """Render the document ingestion tab."""
 
-    st.subheader("📥 Ingest Documents")
+    st.subheader("Ingest Documents")
     st.caption(
         f"Using **{config.chunking_strategy}** chunking · "
         f"chunk size **{config.chunk_size}** tokens · "
@@ -38,12 +38,11 @@ def render_ingest(pipeline: Pipeline, config: RAGConfig) -> None:
     if config.chunk_count > 0:
         st.info(
             f"**{config.chunk_count}** chunks across **{config.doc_count}** documents "
-            f"currently indexed. You can add more documents at any time.",
-            icon="📚",
+            f"currently indexed. You can add more documents at any time."
         )
 
     # ── Ingestion tabs ────────────────────────────────────────────────────────
-    tab_file, tab_url, tab_text = st.tabs(["📎 Upload File", "🌐 Paste URL", "📝 Paste Text"])
+    tab_file, tab_url, tab_text = st.tabs(["Upload File", "Paste URL", "Paste Text"])
 
     with tab_file:
         _render_file_upload(pipeline, config)
@@ -69,7 +68,7 @@ def _render_file_upload(pipeline: Pipeline, config: RAGConfig) -> None:
     )
     if uploaded:
         st.caption(f"Selected: **{uploaded.name}** ({uploaded.size / 1024:.1f} KB)")
-        if st.button("⚡ Ingest File", type="primary"):
+        if st.button("Ingest File", type="primary"):
             with st.spinner(f"Reading, chunking and embedding '{uploaded.name}'…"):
                 text = extract_text_from_file(uploaded)
                 if not text.strip():
@@ -77,7 +76,7 @@ def _render_file_upload(pipeline: Pipeline, config: RAGConfig) -> None:
                     return
                 n = pipeline.ingest_text(text, uploaded.name, None)
             if n > 0:
-                st.success(f"✅ Ingested **{n}** chunks from `{uploaded.name}`")
+                st.success(f"Ingested **{n}** chunks from `{uploaded.name}`")
                 st.rerun()
             else:
                 st.warning("No chunks were created. The document may be empty or too short.")
@@ -86,7 +85,7 @@ def _render_file_upload(pipeline: Pipeline, config: RAGConfig) -> None:
 def _render_url_ingest(pipeline: Pipeline, config: RAGConfig) -> None:
     url = st.text_input("URL", placeholder="https://example.com/article")
     if url:
-        if st.button("🌐 Scrape and Ingest", type="primary"):
+        if st.button("Scrape and Ingest", type="primary"):
             with st.spinner(f"Fetching `{url}`…"):
                 text = scrape_url(url)
                 if not text.strip():
@@ -94,7 +93,7 @@ def _render_url_ingest(pipeline: Pipeline, config: RAGConfig) -> None:
                     return
                 n = pipeline.ingest_text(text, url, None)
             if n > 0:
-                st.success(f"✅ Ingested **{n}** chunks from `{url}`")
+                st.success(f"Ingested **{n}** chunks from `{url}`")
                 st.rerun()
             else:
                 st.warning("No chunks were created from this URL.")
@@ -111,7 +110,7 @@ def _render_text_ingest(pipeline: Pipeline, config: RAGConfig) -> None:
         placeholder="my_notes.txt",
         help="A name to identify this text in the source citations.",
     )
-    if st.button("📝 Ingest Text", type="primary"):
+    if st.button("Ingest Text", type="primary"):
         if not pasted.strip():
             st.error("Please paste some text before ingesting.")
             return
@@ -119,7 +118,7 @@ def _render_text_ingest(pipeline: Pipeline, config: RAGConfig) -> None:
         with st.spinner("Chunking and embedding…"):
             n = pipeline.ingest_text(pasted, name, None)
         if n > 0:
-            st.success(f"✅ Ingested **{n}** chunks as `{name}`")
+            st.success(f"Ingested **{n}** chunks as `{name}`")
             st.rerun()
         else:
             st.warning("No chunks were created. The text may be too short.")
@@ -128,7 +127,7 @@ def _render_text_ingest(pipeline: Pipeline, config: RAGConfig) -> None:
 # ── Corpus table ──────────────────────────────────────────────────────────────
 
 def _render_corpus_table(config: RAGConfig) -> None:
-    st.subheader("📚 Indexed Documents")
+    st.subheader("Indexed Documents")
 
     if config.chunk_count == 0:
         st.caption("No documents ingested yet. Use the tabs above to add documents.")

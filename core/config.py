@@ -51,6 +51,7 @@ LLM_MODELS = [
     "mistralai/mixtral-8x7b-instruct",
     "anthropic/claude-3-haiku",
     "openai/gpt-4o-mini",
+    "google/gemma-3-12b-it",
     "google/gemma-2-9b-it",
 ]
 

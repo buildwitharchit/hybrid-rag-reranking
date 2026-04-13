@@ -33,10 +33,10 @@ def render_evaluation(pipeline: Pipeline, config: RAGConfig, api_key: str) -> No
     """Render the evaluation dashboard."""
 
     if config.chunk_count == 0:
-        st.warning("Ingest documents before running evaluation.", icon="📚")
+        st.warning("Ingest documents before running evaluation.")
         return
 
-    st.subheader("📊 Evaluation Dashboard")
+    st.subheader("Evaluation Dashboard")
     st.caption(
         "Compare naive RAG (dense-only, no expansion, no re-ranking) vs your full "
         "hybrid pipeline on identical queries. All metrics use your custom test set."
@@ -201,7 +201,7 @@ def _render_setup(pipeline: Pipeline, config: RAGConfig, api_key: str) -> None:
             "NDCG@5, MRR, Faithfulness, and Latency."
         )
         st.warning(
-            f"Uses ~{len(test_set) * 2} OpenRouter API calls.", icon="💰"
+            f"Uses ~{len(test_set) * 2} OpenRouter API calls."
         )
         if st.button("Run Evaluation", type="primary", use_container_width=True):
             prog = st.progress(0, text="Running…")

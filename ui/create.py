@@ -35,7 +35,7 @@ _DISABLED_VECTOR_STORES = ["FAISS (coming soon - disabled)", "Pinecone (API - di
 
 def render_create_form() -> None:
     """Render the RAG creation form."""
-    st.title("➕ Create New RAG Pipeline")
+    st.title("Create New RAG Pipeline")
     st.caption(
         "Choose your pipeline components. "
         "Greyed-out options require a paid API or GPU — they are shown for reference only."
@@ -51,7 +51,7 @@ def render_create_form() -> None:
         st.divider()
 
         # ── Chunking ────────────────────────────────────────────────────────
-        st.subheader("📄 Chunking  *(locked after first document ingested)*")
+        st.subheader("Chunking  (locked after first document ingested)")
         st.caption(
             "Chunking strategy determines how your documents are split. "
             "Fixed is fastest; recursive respects structure; semantic is most accurate but slow."
@@ -79,7 +79,7 @@ def render_create_form() -> None:
         st.divider()
 
         # ── Embeddings ──────────────────────────────────────────────────────
-        st.subheader("🧬 Embeddings  *(locked after first document ingested)*")
+        st.subheader("Embeddings  (locked after first document ingested)")
         col1, col2 = st.columns(2)
         embedding_model = col1.selectbox(
             "Embedding model (local, free)",
@@ -116,7 +116,7 @@ def render_create_form() -> None:
         st.divider()
 
         # ── Retrieval ────────────────────────────────────────────────────────
-        st.subheader("🔍 Retrieval  *(editable at any time)*")
+        st.subheader("Retrieval  (editable at any time)")
         col1, col2 = st.columns(2)
         sparse_search = col1.selectbox(
             "Sparse search (local, free)",
@@ -164,7 +164,7 @@ def render_create_form() -> None:
         st.divider()
 
         # ── Re-ranking ───────────────────────────────────────────────────────
-        st.subheader("🎯 Re-ranking  *(editable at any time)*")
+        st.subheader("Re-ranking  (editable at any time)")
         col1, col2 = st.columns(2)
         reranker = col1.selectbox(
             "Re-ranker (local, free)",
@@ -194,13 +194,14 @@ def render_create_form() -> None:
         st.divider()
 
         # ── Generation ───────────────────────────────────────────────────────
-        st.subheader("💬 Generation  *(editable at any time)*")
+        st.subheader("Generation  (editable at any time)")
         st.caption("All models accessed via OpenRouter API. Only external paid service.")
         col1, col2 = st.columns(2)
         llm_model = col1.selectbox(
             "LLM (via OpenRouter)",
             LLM_MODELS,
             index=0,
+            help="All models accessed via OpenRouter. gemma-3-12b-it is fast and cost-effective.",
         )
         temperature = col2.selectbox(
             "Temperature",
@@ -212,7 +213,7 @@ def render_create_form() -> None:
         st.divider()
 
         # ── Submit ───────────────────────────────────────────────────────────
-        submitted = st.form_submit_button("🚀 Create RAG", type="primary", use_container_width=True)
+        submitted = st.form_submit_button("Create RAG", type="primary", use_container_width=True)
 
     if submitted:
         _handle_submit(
@@ -290,5 +291,5 @@ def _handle_submit(**kwargs) -> None:
     st.session_state.active_tab = "workspace"
     st.session_state.active_pipeline = None
     st.session_state.chat_session_id = None
-    st.success(f"✅ RAG '{name}' created! Start by ingesting documents in the Ingest tab.")
+    st.success(f"RAG '{name}' created. Start by ingesting documents in the Ingest tab.")
     st.rerun()

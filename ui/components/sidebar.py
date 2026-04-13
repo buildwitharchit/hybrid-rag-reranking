@@ -17,12 +17,12 @@ from core.registry import load_all_rags
 def render_sidebar() -> None:
     """Render the application sidebar with RAG navigation controls."""
 
-    st.sidebar.title("🔍 RAG Builder")
+    st.sidebar.title("RAG Builder")
     st.sidebar.caption("Hybrid Retrieval-Augmented Generation")
     st.sidebar.divider()
 
     # ── New RAG button ────────────────────────────────────────────────────────
-    if st.sidebar.button("➕ New RAG", use_container_width=True, type="primary"):
+    if st.sidebar.button("+ New RAG", use_container_width=True, type="primary"):
         st.session_state.active_tab = "create"
         st.session_state.active_rag_id = None
         st.session_state.active_pipeline = None
@@ -54,7 +54,7 @@ def render_sidebar() -> None:
         badge_str = " · ".join(badges)
 
         # Sidebar button — highlighted when active
-        button_label = f"{'▶ ' if is_active else ''}{rag.name}"
+        button_label = f"{'> ' if is_active else ''}{rag.name}"
         help_text = f"{badge_str} | {rag.chunk_count} chunks"
 
         if st.sidebar.button(
@@ -76,7 +76,7 @@ def render_sidebar() -> None:
         st.sidebar.caption(f"  {rag.chunk_count} chunks · {badge_str}")
 
     st.sidebar.divider()
-    if st.sidebar.button("🏠 Home", use_container_width=True):
+    if st.sidebar.button("Home", use_container_width=True):
         st.session_state.active_tab = "home"
         st.session_state.active_rag_id = None
         st.rerun()

@@ -1,10 +1,21 @@
-# Environment
+# ------------------------------
+# Environment / Secrets
+# ------------------------------
 .env
+*.env
+*.key
+*.pem
 
-# Runtime data (ephemeral — not committed)
+# ------------------------------
+# Runtime data (ephemeral)
+# ------------------------------
 store/
+logs/
+*.log
 
+# ------------------------------
 # Python
+# ------------------------------
 __pycache__/
 *.py[cod]
 *.pyo
@@ -12,12 +23,47 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# Virtual environments
 .venv/
 venv/
 
-# HuggingFace model cache (large, auto-downloaded)
+# ------------------------------
+# Data (RAG specific)
+# ------------------------------
+data/
+*.csv
+*.jsonl
+*.parquet
+
+# Keep sample data
+!data/sample/
+
+# ------------------------------
+# Vector DB / Embeddings
+# ------------------------------
+chroma/
+*.db
+*.sqlite3
+
+# ------------------------------
+# ML / Model cache
+# ------------------------------
 .cache/
 
+# ------------------------------
+# Streamlit
+# ------------------------------
+.streamlit/secrets.toml
+
+# ------------------------------
+# IDE / Editor
+# ------------------------------
+.vscode/
+.idea/
+
+# ------------------------------
 # OS
+# ------------------------------
 .DS_Store
 Thumbs.db

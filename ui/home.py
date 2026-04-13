@@ -4,7 +4,7 @@ ui/home.py
 Home screen: a card-grid dashboard showing all created RAG pipelines.
 
 Each card summarises the RAG's configuration and stats at a glance.
-A "Create new RAG →" card always appears as the last item.
+A "Create new RAG" card always appears as the last item.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from core.registry import load_all_rags
 def render_home() -> None:
     """Render the RAG manager dashboard."""
 
-    st.title("🔍 RAG Builder")
+    st.title("RAG Builder")
     st.caption(
         "Create and manage independent RAG pipelines. "
         "Each pipeline has its own document corpus, retrieval configuration, and eval set."
@@ -36,7 +36,7 @@ def render_home() -> None:
                 "You will be able to ingest documents, chat, and compare "
                 "naive vs hybrid retrieval performance."
             )
-            if st.button("➕ Create your first RAG", type="primary", use_container_width=True):
+            if st.button("Create your first RAG", type="primary", use_container_width=True):
                 st.session_state.active_tab = "create"
                 st.rerun()
         return
@@ -65,13 +65,13 @@ def _render_rag_card(rag) -> None:
         # Configuration badges
         badges = []
         if rag.sparse_search != "none":
-            badges.append(f"🔀 Hybrid ({rag.sparse_search.upper()})")
+            badges.append(f"Hybrid ({rag.sparse_search.upper()})")
         else:
-            badges.append("📌 Dense-only")
+            badges.append("Dense-only")
         if rag.reranker != "none":
-            badges.append("🎯 Re-ranked")
+            badges.append("Re-ranked")
         if rag.query_expansion != "none":
-            badges.append(f"🔁 {rag.query_expansion}")
+            badges.append(rag.query_expansion)
 
         st.markdown(" &nbsp; ".join(f"`{b}`" for b in badges))
 
@@ -89,9 +89,9 @@ def _render_rag_card(rag) -> None:
 
         # Eval status indicator
         if rag.has_eval_results:
-            st.success("✅ Eval results available", icon=None)
+            st.success("Eval results available")
         elif rag.has_eval_set:
-            st.info("📋 Eval set ready — run evaluation", icon=None)
+            st.info("Eval set ready — run evaluation")
         else:
             st.caption("No eval set yet")
 
@@ -109,14 +109,14 @@ def _render_rag_card(rag) -> None:
 def _render_create_card() -> None:
     """Render the 'Create new RAG' call-to-action card."""
     with st.container(border=True):
-        st.markdown("### ➕ Create New RAG")
+        st.markdown("### Create New RAG")
         st.write(
             "Configure a new hybrid retrieval pipeline with your own "
             "document corpus, chunking strategy, embeddings, and re-ranker."
         )
         st.divider()
         if st.button(
-            "Create new RAG →",
+            "Create new RAG",
             key="create_new_card_btn",
             use_container_width=True,
             type="secondary",

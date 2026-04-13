@@ -22,7 +22,7 @@ from core.registry import delete_rag, update_rag, get_rag
 def render_config(config: RAGConfig, pipeline: Pipeline) -> None:
     """Render the configuration view and editor."""
 
-    st.subheader(f"⚙️ Configuration — {config.name}")
+    st.subheader(f"Configuration — {config.name}")
     if config.description:
         st.caption(config.description)
 
@@ -30,7 +30,7 @@ def render_config(config: RAGConfig, pipeline: Pipeline) -> None:
 
     # ── Ingestion config (read-only after lock) ───────────────────────────────
     with col1:
-        st.markdown("### 🔒 Ingestion Config")
+        st.markdown("### Ingestion Config")
         if config.is_locked:
             st.caption("Locked — change these by deleting and recreating the RAG.")
         else:
@@ -44,7 +44,7 @@ def render_config(config: RAGConfig, pipeline: Pipeline) -> None:
 
     # ── Retrieval config (editable) ───────────────────────────────────────────
     with col2:
-        st.markdown("### ✏️ Retrieval Config")
+        st.markdown("### Retrieval Config")
         st.caption("Edit at any time — changes take effect immediately.")
 
         if st.button("Edit retrieval config", key="edit_retrieval_btn"):
@@ -65,7 +65,7 @@ def render_config(config: RAGConfig, pipeline: Pipeline) -> None:
     st.divider()
 
     # ── Stats ─────────────────────────────────────────────────────────────────
-    st.markdown("### 📊 Stats")
+    st.markdown("### Stats")
     cols = st.columns(3)
     cols[0].metric("Documents", config.doc_count)
     cols[1].metric("Chunks", config.chunk_count)
@@ -74,7 +74,7 @@ def render_config(config: RAGConfig, pipeline: Pipeline) -> None:
     st.divider()
 
     # ── Danger zone ───────────────────────────────────────────────────────────
-    st.markdown("### ⚠️ Danger Zone")
+    st.markdown("### Danger Zone")
     with st.container(border=True):
         st.warning(
             f"Deleting **{config.name}** permanently removes all documents, "
@@ -108,7 +108,7 @@ def _kv_row(label: str, value: str, locked: bool = False) -> None:
     """Render a key-value configuration row."""
     c1, c2 = st.columns([1, 1])
     c1.markdown(f"**{label}**")
-    suffix = " 🔒" if locked else ""
+    suffix = " (locked)" if locked else ""
     c2.markdown(f"`{value}`{suffix}")
 
 
@@ -162,7 +162,7 @@ def _render_retrieval_editor(config: RAGConfig) -> None:
         )
 
         col1, col2 = st.columns(2)
-        save_clicked = col1.form_submit_button("💾 Save", type="primary", use_container_width=True)
+        save_clicked = col1.form_submit_button("Save", type="primary", use_container_width=True)
         cancel_clicked = col2.form_submit_button("Cancel", use_container_width=True)
 
     if save_clicked:

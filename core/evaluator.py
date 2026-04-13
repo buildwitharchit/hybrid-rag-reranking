@@ -233,22 +233,61 @@ def generate_eval_set_from_corpus(
     eval_set = []
 
     for chunk_id, chunk_text in sampled:
-        prompt = (
-            "Given the following passage, generate one question that this passage "
-            "directly answers, and provide the ideal short answer.\n\n"
-            'Return ONLY valid JSON in this format: {"question": "...", "answer": "..."}\n\n'
-            f"Passage:\n{chunk_text[:1000]}"  # Truncate very long chunks
-        )
+        # Use a system + user split so models don't refuse the JSON instruction.
+        # Keep the passage short to stay well within max_tokens.
+        passage = chunk_text[:800].strip()
         try:
             response = client.chat.completions.create(
                 model=llm_model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a question-generation assistant. "
+                            "Given a passage, produce exactly one question the passage answers "
+                            "and a short ideal answer. "
+                            'Respond with valid JSON only: {"question": "...", "answer": "..."}'
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Passage:\n{passage}",
+                    },
+                ],
                 temperature=0.3,
-                max_tokens=256,
+                max_tokens=512,
             )
-            raw = response.choices[0].message.content.strip()
+
+            # Guard against None content (model refusal / content filter)
+            content = response.choices[0].message.content
+            if not content:
+                logger.warning(f"Empty response for chunk {chunk_id} — skipping.")
+                continue
+
+            raw = content.strip()
+            logger.debug(f"Raw LLM response for {chunk_id}: {raw[:120]}")
+
+            # Strip markdown code fences if present
             raw = raw.strip("```json").strip("```").strip()
-            parsed = json.loads(raw)
+
+            # Attempt 1: direct JSON parse
+            parsed = None
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                # Attempt 2: extract the first {...} block via regex
+                import re
+                m = re.search(r'\{[^{}]+\}', raw, re.DOTALL)
+                if m:
+                    try:
+                        parsed = json.loads(m.group())
+                    except json.JSONDecodeError:
+                        pass
+
+            if not parsed:
+                logger.warning(f"Could not parse JSON for chunk {chunk_id}. Raw: {raw[:200]}")
+                continue
+
             question = parsed.get("question", "").strip()
             answer = parsed.get("answer", "").strip()
             if question and answer:
@@ -257,7 +296,7 @@ def generate_eval_set_from_corpus(
                         "query": question,
                         "ideal_answer": answer,
                         "relevant_chunk_ids": [chunk_id],
-                        "source_doc": "",  # will be filled by caller from metadata
+                        "source_doc": "",
                     }
                 )
         except Exception as exc:

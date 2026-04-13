@@ -31,8 +31,7 @@ def render_chat(pipeline: Pipeline, config: RAGConfig, api_key: str) -> None:
 
     if config.chunk_count == 0:
         st.warning(
-            "⚠️ No documents ingested yet. Go to the **Ingest** tab to add documents first.",
-            icon="📚",
+            "No documents ingested yet. Go to the **Ingest** tab to add documents first.",
         )
         return
 
@@ -40,7 +39,7 @@ def render_chat(pipeline: Pipeline, config: RAGConfig, api_key: str) -> None:
     _ensure_session(config.id)
 
     # ── Session switcher in the sidebar area ──────────────────────────────────
-    with st.expander("💬 Chat sessions", expanded=False):
+    with st.expander("Chat sessions", expanded=False):
         _render_session_controls(config.id)
 
     # ── Load and display existing messages ────────────────────────────────────
@@ -112,7 +111,7 @@ def _render_sources(sources: list) -> None:
     if not sources:
         return
 
-    st.caption("📎 Sources:")
+    st.caption("Sources:")
     cols = st.columns(min(len(sources), 4))
     for i, source in enumerate(sources[:4]):
         label = source.get("source_doc", "Unknown")
@@ -134,7 +133,7 @@ def _render_session_controls(rag_id: str) -> None:
     """Show session list and allow starting a new session."""
     col1, col2 = st.columns([3, 1])
     with col2:
-        if st.button("🆕 New session", key="new_session_btn"):
+        if st.button("New session", key="new_session_btn"):
             session_id = create_session(rag_id)
             st.session_state.chat_session_id = session_id
             st.rerun()
@@ -151,7 +150,7 @@ def _render_session_controls(rag_id: str) -> None:
         is_current = sess["id"] == current_id
 
         if is_current:
-            col1.markdown(f"▶ **{label}** *(current)*")
+            col1.markdown(f"> **{label}** *(current)*")
         else:
             if col1.button(label, key=f"sess_{sess['id']}"):
                 st.session_state.chat_session_id = sess["id"]

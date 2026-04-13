@@ -28,7 +28,7 @@ load_dotenv()
 # ── Page config — must be the first Streamlit call ───────────────────────────
 st.set_page_config(
     page_title="RAG Builder",
-    page_icon="🔍",
+    page_icon=None,
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -113,13 +113,13 @@ def _render_workspace(key: str) -> None:
                 return
 
     # Page header
-    st.title(f"🔍 {config.name}")
+    st.title(config.name)
     if config.description:
         st.caption(config.description)
 
     # 5-tab workspace
     tab_ingest, tab_chat, tab_results, tab_internals, tab_config = st.tabs(
-        ["📥 Ingest", "💬 Chat", "📊 Evaluation", "🔬 Internals", "⚙️ Config"]
+        ["Ingest", "Chat", "Evaluation", "Internals", "Config"]
     )
 
     with tab_ingest:
